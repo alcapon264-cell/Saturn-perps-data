@@ -18,7 +18,7 @@ let non200 = 0, tooMany = 0;
 
 for (let s = 0; s < samples; s++) {
   for (const [m, mint] of Object.entries(MARKETS)) {
-    const t0 = Date.now(); const r = { sample: s + 1, market: m };
+    const t0 = Date.now(); const r = { sample: s + 1, market: m, at: new Date(t0).toISOString() };   /* request start time (UTC), evidence of the real cadence */
     try {
       const res = await fetch(`${BASE}/market-stats?mint=${encodeURIComponent(mint)}`, { method: 'GET', headers: { accept: 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(10000) });
       r.status = res.status; r.ms = Date.now() - t0; r.headers = Object.fromEntries(res.headers.entries());
