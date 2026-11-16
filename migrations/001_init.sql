@@ -32,7 +32,7 @@ CREATE TABLE perps_rejects (
   source      text        NOT NULL,
   market      text        NOT NULL,
   observed_at timestamptz NOT NULL,
-  reason      text        NOT NULL CHECK (reason IN ('non_finite','non_positive','malformed','wrong_market','jump_pending','jump_rejected')),
+  reason      text        NOT NULL CHECK (reason IN ('non_finite','non_positive','malformed','wrong_market','jump_pending','jump_rejected','implausible')),
   detail      text        NULL CHECK (length(detail) <= 500)
 );
 CREATE INDEX perps_rejects_time ON perps_rejects (observed_at);
