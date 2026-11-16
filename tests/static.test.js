@@ -19,19 +19,25 @@ test('isolation: the existing Saturn WebSocket constant and hosts never appear i
   }
 });
 
-test('read-only: the only outbound call is one GET to the fixed Jupiter host; no write verbs, no order/position endpoints', () => {
+test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere', () => {
   const callers = Object.entries(prod).filter(([f, t]) => /\bfetch\s*\(|fetchImpl\s*\(|https?\.request|net\.connect|axios/.test(t) && !/live-check/.test(f)).map(([f]) => f);
   assert.deepEqual(callers.sort(), ['src/jupiter.js'], 'outbound HTTP lives in exactly one module');
-  const j = prod['src/jupiter.js']; assert.match(j, /method: 'GET'/); assert.ok(!/method: '(POST|PUT|PATCH|DELETE)'/.test(j));
+  const j = prod['src/jupiter.js'];
+  const rec = j.slice(0, j.indexOf('createJupiterGateway')); assert.match(rec, /method: 'GET'/); assert.ok(!/method: '(POST|PUT|PATCH|DELETE)'/.test(rec), 'the market-stats recorder client is GET-only');
+  assert.match(j, /GATEWAY_PATHS = Object\.freeze\(\{ positions: '\/positions', increase: '\/positions\/increase', decrease: '\/positions\/decrease', execute: '\/transaction\/execute' \}\)/, 'gateway upstream paths are a fixed allow-list');
+  assert.match(j, /if \(!Object\.values\(GATEWAY_PATHS\)\.includes\(path\)\) throw/);
   for (const [f, t] of Object.entries(prod)) {
-    assert.ok(!/\/(orders?|positions?|trades?|swap|increase|decrease|close|limit|deposit|withdraw|transfer)\b/i.test(t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')) || /live-check/.test(f), f + ' references a trading endpoint');
-    assert.ok(!/signTransaction|sendTransaction|Keypair|privateKey|secretKey|mnemonic|wallet\.sign|@solana\/web3/i.test(t), f + ' touches wallet/signing');
+    const code = t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    if (!['src/jupiter.js', 'src/gateway.js', 'src/perps-program.js'].includes(f) && !/live-check/.test(f)) assert.ok(!/\/(orders?|positions?|trades?|swap|increase|decrease|close|limit|deposit|withdraw|transfer)\b/i.test(code), f + ' references a trading endpoint outside the gateway');
+    assert.ok(!/signTransaction|sendTransaction|Keypair|privateKey|secretKey|mnemonic|wallet\.sign|@solana\/web3|createPrivateKey|crypto\.sign\(|\bsign\(/i.test(code), f + ' touches wallet/signing');
   }
-  assert.ok(!/market-stats/.test(Object.entries(prod).filter(([f]) => f !== 'src/jupiter.js' && f !== 'src/config.js' && !/live-check/.test(f)).map(x => x[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')).join('')), 'market-stats URL is built only in the Jupiter client');
+  assert.ok(!/market-stats/.test(Object.entries(prod).filter(([f]) => !['src/jupiter.js', 'src/config.js', 'src/gateway.js'].includes(f) && !/live-check/.test(f)).map(x => x[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')).join('')), 'market-stats URL is built only in the Jupiter client');
 });
 
-test('HTTP surface: only GET/OPTIONS routes; no body parsing; no eval/child_process/dynamic require', () => {
-  const h = prod['src/http.js']; assert.ok(!/req\.on\(['"]data/.test(h) && !/JSON\.parse\(.*body/i.test(h), 'request bodies are never read');
+test('HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bodies (behind the execution switch); no eval/child_process/dynamic require', () => {
+  const h = prod['src/http.js']; assert.ok(!/req\.on\(['"]data/.test(h) && !/JSON\.parse\(.*body/i.test(h), 'http.js never reads request bodies');
+  for (const [f, t] of Object.entries(prod)) if (f !== 'src/gateway.js') assert.ok(!/req\.on\(['"]data/.test(t), f + ' reads a request body; only the gateway may');
+  const g = prod['src/gateway.js']; assert.match(g, /if \(!G\.executionEnabled\)/, 'transaction routes are behind the execution switch'); assert.match(g, /G\.maxBody/);
   for (const [f, t] of Object.entries(prod)) { if (/live-check/.test(f)) continue; assert.ok(!/\beval\s*\(|new Function|child_process|require\(\s*[^'"]|import\(\s*[^'"]/.test(t) || f === 'server.js', f); }
   assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets', '/v1/perps/readiness']);
 });
@@ -54,7 +60,7 @@ test('dependencies: exactly ws and pg, nothing else', () => {
 
 test('WebSocket is a separate path on this service; the spot path is not served', () => {
   const a = prod['src/app.js']; assert.match(a, /req\.url !== '\/perps\/live'/); assert.ok(!/'\/live'/.test(a));
-  assert.ok(!/execute|placeOrder|canExecute/.test(Object.values(prod).join('\n')), 'no trading hooks in the service');
+  assert.ok(!/execute|placeOrder|canExecute/.test(Object.entries(prod).filter(([f]) => !['src/gateway.js', 'src/jupiter.js', 'src/config.js'].includes(f)).map(x => x[1]).join('\n')), 'no trading hooks outside the gateway');
 });
 
 test('migrations are additive and forward-only (no DROP/TRUNCATE/ALTER ... DROP)', () => {
