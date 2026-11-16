@@ -1,0 +1,16 @@
+
+# NOT RUN YET (S1 is offline). Runs the full suite on every push/PR. It does NOT deploy anything.
+name: Saturn Perps Data tests
+on: [push, pull_request, workflow_dispatch]
+permissions: { contents: read }
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Make sure PostgreSQL server binaries exist (the tests start a throw-away local cluster)
+        run: command -v initdb >/dev/null || ls /usr/lib/postgresql/*/bin/initdb >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y postgresql)
+      - run: npm install
+      - run: npm test
