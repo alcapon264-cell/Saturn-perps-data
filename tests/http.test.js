@@ -16,15 +16,40 @@ async function boot(extra = {}) {
 }
 const json = async r => ({ status: r.status, headers: r.headers, body: await r.json() });
 
-test('healthz: shape, 200, no secrets, no stack traces', opts, async () => {
-  const e = await boot(); try {
+const TOKEN = 'status-token-0123456789-abcdefghij';
+const auth = (t = TOKEN) => ({ authorization: 'Bearer ' + t });
+
+test('healthz is PUBLIC and MINIMAL: only ok/service/ready, no operational detail, no secrets', opts, async () => {
+  const e = await boot({ env: { STATUS_TOKEN: TOKEN } }); try {
     const r = await json(await e.get('/healthz')); assert.equal(r.status, 200);
-    assert.equal(r.body.service, 'saturn-perps-data'); assert.equal(r.body.ok, true); assert.equal(r.body.leader, false, 'API-only instance'); assert.equal(r.body.db.ok, true);
-    assert.deepEqual(Object.keys(r.body.recorder.markets).sort(), ['BTC', 'ETH', 'SOL']);
-    assert.equal(r.body.thresholds.intervalSec, 15);
-    const s = JSON.stringify(r.body); for (const x of ['secret-pass', 'secret-user', 'db.internal', 'postgres://']) assert.ok(!s.includes(x), x);
+    assert.deepEqual(Object.keys(r.body).sort(), ['ok', 'ready', 'service']); assert.equal(r.body.service, 'saturn-perps-data'); assert.equal(r.body.ok, true);
+    const s = JSON.stringify(r.body);
+    for (const x of ['recorder', 'metrics', 'leader', 'thresholds', 'epoch', 'version', 'uptime', 'lastInitError', 'rateHeaders', 'queued', 'markets', 'SOL', 'secret-pass', 'secret-user', 'db.internal', 'postgres://', TOKEN]) assert.ok(!s.includes(x), 'healthz exposes ' + x);
     assert.equal(r.headers.get('cache-control'), 'no-store'); assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
-    assert.equal((await e.get('/')).status, 200);
+    assert.deepEqual(Object.keys((await json(await e.get('/'))).body).sort(), ['ok', 'ready', 'service']);
+  } finally { await e.drop(); }
+});
+
+test('/internal/status: does not exist unless STATUS_TOKEN is configured', opts, async () => {
+  const e = await boot(); try {
+    for (const h of [{}, auth(), auth('anything')]) { const r = await json(await e.get('/internal/status', h)); assert.equal(r.status, 404); assert.equal(r.body.error, 'not_found'); }
+  } finally { await e.drop(); }
+});
+
+test('/internal/status: token required (401), never browser-callable (403), attempts rate-limited (429), correct token returns detail without secrets', opts, async () => {
+  const e = await boot({ env: { STATUS_TOKEN: TOKEN } }); try {
+    const tries = [{}, { authorization: 'Bearer' }, { authorization: 'Bearer ' }, { authorization: 'Basic ' + TOKEN }, { authorization: 'bearer ' + TOKEN }, auth('wrong-token-wrong-token-wrong'), auth(TOKEN + 'x'), auth(TOKEN.slice(0, -1)), { authorization: 'Bearer ' + 'A'.repeat(600) }];
+    for (const h of tries) { const r = await json(await e.get('/internal/status', { 'x-forwarded-for': 'a, 5.5.5.' + tries.indexOf(h), ...h })); assert.equal(r.status, 401, JSON.stringify(h).slice(0, 60)); assert.deepEqual(r.body, { ok: false, error: 'unauthorized' }); }
+    let r = await json(await e.get('/internal/status', { ...auth(), origin: ORIGIN })); assert.equal(r.status, 403, 'even the right token is refused from a browser origin'); assert.equal(r.headers.get('access-control-allow-origin'), null);
+    const ok = await json(await e.get('/internal/status', { ...auth(), 'x-forwarded-for': 'a, 6.6.6.6' })); assert.equal(ok.status, 200);
+    assert.equal(ok.body.service, 'saturn-perps-data'); assert.equal(ok.body.thresholds.intervalSec, 15); assert.deepEqual(Object.keys(ok.body.recorder.markets).sort(), ['BTC', 'ETH', 'SOL']); assert.equal(ok.body.db.ok, true); assert.ok(ok.body.metrics.counters);
+    const s = JSON.stringify(ok.body); for (const x of ['secret-pass', 'secret-user', 'db.internal', 'postgres://', TOKEN]) assert.ok(!s.includes(x), 'status leaks ' + x);
+    assert.equal(ok.headers.get('cache-control'), 'no-store');
+    for (let i = 0; i < 12; i++) r = await e.get('/internal/status', { 'x-forwarded-for': 'a, 7.7.7.7', ...auth('wrong-token-wrong-token-wrong') });
+    assert.equal(r.status, 429, 'brute-force attempts are throttled'); assert.equal((await e.get('/internal/status', { 'x-forwarded-for': 'a, 7.7.7.7', ...auth() })).status, 429, 'even a correct token is throttled while locked out');
+    assert.ok(e.parts.metrics.get('status_unauthorized') >= 9);
+    assert.equal((await e.get('/internal/status?x=1', { 'x-forwarded-for': 'a, 8.8.8.8', ...auth() })).status, 200);
+    assert.equal((await fetch(e.base + '/internal/status', { method: 'POST', headers: auth() })).status, 405);
   } finally { await e.drop(); }
 });
 
@@ -123,13 +148,14 @@ test('rate limit: per-IP window; spoofed first x-forwarded-for entry cannot dodg
 });
 
 test('database outage: 503 db_unavailable on data routes, health stays 200 with ok:false, recovers', opts, async () => {
-  const e = await boot(); try {
+  const e = await boot({ env: { STATUS_TOKEN: TOKEN } }); try {
     await seedHistory(e, 'SOL', START, START + 2 * HOUR);
     e.db.fail = true;
     let r = await json(await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=3')); assert.equal(r.status, 503); assert.equal(r.body.error, 'db_unavailable');
     r = await json(await e.get('/v1/perps/markets')); assert.equal(r.status, 503);
     r = await json(await e.get('/v1/perps/readiness?market=SOL')); assert.equal(r.status, 503);
-    r = await json(await e.get('/healthz')); assert.equal(r.status, 200); assert.equal(r.body.ok, false); assert.equal(r.body.db.ok, false);
+    r = await json(await e.get('/healthz')); assert.equal(r.status, 200); assert.deepEqual(r.body, { ok: false, service: 'saturn-perps-data', ready: true }, 'minimal body even during an outage');
+    const st = await json(await e.get('/internal/status', { authorization: 'Bearer status-token-0123456789-abcdefghij' })); assert.equal(st.status, 200); assert.equal(st.body.db.ok, false); assert.equal(st.body.ok, false);
     e.db.fail = false; await new Promise(r => setTimeout(r, 2100));
     r = await json(await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=3')); assert.equal(r.status, 200);
   } finally { await e.drop(); }

@@ -259,10 +259,13 @@ test('retention: purges old observations/logs, keeps candles; runs once per UTC 
   } finally { await e.drop(); }
 });
 
-test('config safety: nothing in health/logs leaks the database URL or API key', opts, async () => {
-  const e = await makeEnv({ env: { JUPITER_API_KEY: 'TOP-SECRET-KEY', JUPITER_API_KEY_HEADER: 'x-api-key' } }); try {
+test('config safety: neither the public health route nor the protected status route leaks the database URL, API key or status token; logs are clean', opts, async () => {
+  const TOK = 'status-token-0123456789-abcdefghij';
+  const e = await makeEnv({ env: { JUPITER_API_KEY: 'TOP-SECRET-KEY', JUPITER_API_KEY_HEADER: 'x-api-key', STATUS_TOKEN: TOK } }); try {
     await e.app.parts.recorder.start(); await e.clock.advance(30000);
-    const h = JSON.stringify(await (async () => { const out = {}; const req = { method: 'GET', url: '/healthz', headers: {}, socket: { remoteAddress: '1.1.1.1' } }; const res = { writeHead(c) { out.c = c; }, end(b) { out.b = b; } }; await e.parts.handler(req, res); return out; })());
-    for (const s of ['secret-pass', 'secret-user', 'TOP-SECRET-KEY', 'db.internal']) { assert.ok(!h.includes(s), 'health leaks ' + s); assert.ok(!e.logs.join('\n').includes(s), 'logs leak ' + s); }
+    const call = async (url, headers = {}) => { const out = {}; const req = { method: 'GET', url, headers, socket: { remoteAddress: '1.1.1.1' } }; const res = { writeHead(c) { out.c = c; }, end(b) { out.b = b; } }; await e.parts.handler(req, res); return out; };
+    const pub = await call('/healthz'), prot = await call('/internal/status', { authorization: 'Bearer ' + TOK });
+    assert.equal(pub.c, 200); assert.equal(prot.c, 200); assert.ok(JSON.parse(prot.b).recorder.markets.SOL.state);
+    for (const s of ['secret-pass', 'secret-user', 'TOP-SECRET-KEY', 'db.internal', TOK]) { assert.ok(!pub.b.includes(s) && !prot.b.includes(s), 'response leaks ' + s); assert.ok(!e.logs.join('\n').includes(s), 'logs leak ' + s); }
   } finally { await e.drop(); }
 });

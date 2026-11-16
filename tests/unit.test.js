@@ -172,6 +172,12 @@ test('config: defaults, bounds, secrets handling', () => {
   assert.ok(validateConfig(loadConfig({ DATABASE_URL: 'x', JUPITER_API_KEY: 'k', JUPITER_API_KEY_HEADER: 'bad header\r\n' })).length);
 });
 
+test('config: STATUS_TOKEN must be long and printable; empty means the status endpoint is disabled', () => {
+  const v = t => validateConfig(loadConfig({ DATABASE_URL: 'x', STATUS_TOKEN: t }));
+  assert.deepEqual(v(''), []); assert.deepEqual(v('a'.repeat(24)), []); assert.ok(v('short').some(e => /STATUS_TOKEN/.test(e))); assert.ok(v('has space inside the token!!').some(e => /STATUS_TOKEN/.test(e)));
+  assert.equal(loadConfig({}).statusToken, '');
+});
+
 test('limits: client IP ignores a spoofed first x-forwarded-for entry', () => {
   const req = (xff, ra = '10.0.0.9') => ({ headers: xff === undefined ? {} : { 'x-forwarded-for': xff }, socket: { remoteAddress: ra } });
   assert.equal(clientIp(req('1.2.3.4, 5.6.7.8'), 1), '5.6.7.8');
