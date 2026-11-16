@@ -54,3 +54,6 @@ No critical or high findings. Two weaknesses found *during* the build were fixed
 
 ## 4. What this report does not cover
 Live behaviour of Jupiter, Render networking and TLS, real `pg` driver behaviour, long-running memory behaviour, and the (future) frontend integration. Each is scheduled for S2–S4 and nothing here should be read as a claim about them.
+
+## S2 addition: magnitude guard
+Per-market plausibility range (rejects x1e6 / x1e-6 scale changes before they can seed the jump filter). Mutants: range check removed, upper bound removed — both killed (16 total).

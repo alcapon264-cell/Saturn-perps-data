@@ -83,3 +83,25 @@ Rules (all **VERIFIED**): a message is sent only for a NEW accepted observation 
 
 ## 8. Not done (by instruction)
 No deployment, no Render resources, no frontend change, no S2/S3+, no order functionality, no Chaos Labs dependency.
+
+## Revision 3 — S2 live-browser review (2026-11-16)
+
+Real data: 12/12 HTTP 200 from `https://perps-api.jup.ag/v1/market-stats`, no 429. `price` is a **decimal string**; no timestamp field and no rate-limit headers were visible (browser CORS exposes only `content-length`, `content-type`).
+
+| Area | Finding | Change |
+|---|---|---|
+| Price parsing | All 12 real strings parse and round-trip exactly (`DEC` regex). | none |
+| Magnitude | A x1e6 or x1e-6 scaled price was **accepted** as a first observation (jump filter has no baseline). | Per-market plausibility range (SOL 0.5–50000, ETH 20–500000, BTC 1000–5e6, env `PRICE_RANGE_<M>="min,max"`); out-of-range -> `perps_rejects` reason `implausible`, nothing stored. Migration 001 amended in place (never applied anywhere). |
+| Timestamps | The source gives none. All times are **receive time**; staleness is measured on our own age-of-last-accepted-observation, not source freshness. | API now declares `timeBasis: "receive_time"` (`/markets`, candles `meta`). |
+| Frozen source | Real data shows identical consecutive prices (e.g. ETH x3) — normal at 15 s, but a stuck upstream would look the same. | Recorder summary adds `unchangedRun`, `maxUnchangedRun`, `lastPriceChangeAt` (`suspectFlat` kept). Detection only; no data is altered. |
+| Backoff / Retry-After | Logic unchanged and unit-tested with MOCK 429/Retry-After. Real Jupiter headers are **unknown**. | none; needs a Node live-check run. |
+| Recorder | Replayed the 12 real values through the real recorder + PostgreSQL: stored exactly, no rejects. | `tests/live-fixtures.test.js` (6 tests; network MOCK). |
+
+Tests: 98/98 (was 92). Mutants: disabling the recorder range check, and dropping the upper bound, are both caught.
+
+### Remaining before S2 can be fully accepted
+1. Run `scripts/live-check.mjs` under Node (not a browser) to capture full response headers and any Retry-After/ratelimit headers.
+2. Longer sampling at the real 15 s cadence (S4 soak) — 4 samples/market prove nothing about sustained rate limits.
+3. Behaviour from a server/datacenter origin (Render egress IPs may be shared); first check from the service container with `RECORDER_ENABLED=0` in S3 staging.
+4. Decision on whether a Jupiter API key is needed.
+Not claimed: production readiness, any live integration beyond the 12 browser requests. S3 not started.

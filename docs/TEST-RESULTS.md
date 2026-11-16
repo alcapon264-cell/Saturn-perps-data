@@ -2,7 +2,7 @@
 
 Final run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on Node v22.23.4, PostgreSQL 16. S1 is an offline stage: **not production-ready**.
 
-**Result: 92/92 passed, 0 skipped, 0 cancelled.**
+**Result: 98/98 passed, 0 skipped, 0 cancelled.**
 
 ## What these results do and do not prove
 - **Real:** SQL, constraints, migrations, advisory locks, retention and candle maths ran against an actual PostgreSQL 16 server. The HTTP and WebSocket tests used real local TCP sockets (`fetch`, `ws`).
@@ -142,3 +142,6 @@ Final run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on 
 
 - PASS — live-check: GET-only to the Jupiter host, 3 requests per sample, reports headers / price type / timestamp-like keys
 - PASS — live-check: caps requests (max 20 samples), exits non-zero on 429 or network failure, never sends credentials
+
+## Revision 3
+Added tests/live-fixtures.test.js (6 tests, real price strings as fixtures, MOCK network). Total 98/98.
