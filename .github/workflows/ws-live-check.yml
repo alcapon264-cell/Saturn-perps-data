@@ -1,0 +1,79 @@
+# WS VERIFICATION ONLY. Manually triggered (workflow_dispatch).
+# Connects to the Saturn Perps WebSocket the way a browser from the allowed origin would, and checks the reliability behaviour:
+# upgrade accepted for the configured Origin, perps_hello, subscribe/ack for SOL+ETH+BTC and five timeframes, rejection of an unsupported market,
+# ticks (only if the recorder is enabled on the service), valid + strictly ordered ticks, connection stays open, reconnect + resubscribe, foreign Origin refused (403).
+# READ-ONLY: no API key, no secrets, no Jupiter requests (it only listens to what the service already publishes), nothing is deployed, no Render settings are touched.
+# If the recorder is disabled on the service, the "ticks" check is reported as SKIPPED (not passed).
+name: Perps WebSocket live check
+
+on:
+  workflow_dispatch:
+    inputs:
+      listen_sec:
+        description: Seconds to listen for ticks (the sampling interval is about 15 s)
+        type: choice
+        options: ['45', '90', '180']
+        default: '90'
+      ws_url:
+        description: Perps WebSocket URL (must be wss://)
+        type: string
+        default: 'wss://saturn-perps-staging.onrender.com/perps/live'
+      origin:
+        description: Origin header to send (must be listed in the service's ALLOWED_ORIGINS)
+        type: string
+        default: 'https://alcapon264-cell.github.io'
+
+permissions:
+  contents: read
+
+# Never two runs at once.
+concurrency:
+  group: ws-live-check
+  cancel-in-progress: false
+
+jobs:
+  ws-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate inputs
+        env:
+          WS_URL: ${{ inputs.ws_url }}
+          WS_ORIGIN: ${{ inputs.origin }}
+        run: |
+          case "$WS_URL" in
+            wss://*/perps/live) ;;
+            *) echo "ws_url must start with wss:// and end with /perps/live"; exit 1 ;;
+          esac
+          case "$WS_ORIGIN" in
+            https://*) ;;
+            *) echo "origin must start with https://"; exit 1 ;;
+          esac
+
+      - name: Install dependencies (ws only; no dev dependencies)
+        run: npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
+
+      - name: Run the WebSocket check against the Perps service
+        env:
+          WS_URL: ${{ inputs.ws_url }}
+          WS_ORIGIN: ${{ inputs.origin }}
+          LISTEN_SEC: ${{ inputs.listen_sec }}
+          OUT: ws-live-check.json
+        run: node scripts/ws-check.mjs
+
+      - name: Upload the report (also when a check failed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ws-live-check-${{ github.run_id }}
+          path: ws-live-check.json
+          if-no-files-found: warn
+          retention-days: 30
