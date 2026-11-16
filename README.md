@@ -1,6 +1,6 @@
 # Saturn Perps Data (independent service)
 
-Records Jupiter Perps `GET /v1/market-stats` prices for SOL, ETH and BTC, builds **sampled** OHLC candles from the recorded observations only, and serves them through a read-only HTTP API and a **separate** Perps WebSocket. It places no orders, holds no wallets and does not touch any existing Saturn service.
+Records Jupiter Perps `GET /v1/market-stats` prices for SOL, ETH and BTC, builds **sampled** OHLC candles from the recorded observations only, and serves them through a read-only HTTP API and a **separate** Perps WebSocket. It holds no wallets or keys, never signs anything and does not touch any existing Saturn service. Since r115 it also hosts the Perps gateway: positions reads are on; the transaction-relay routes exist but are disabled unless explicitly enabled (they are not, and must not be, until execution is approved).
 
 **Status: stage S1 accepted as an offline implementation (built and tested against mocks). NOT production-ready. Not deployed. Not connected to the Saturn frontend.**
 
@@ -33,6 +33,7 @@ docs/                  implementation report, security report, cost estimate, S2
 
 ## Endpoints (all GET, JSON)
 `/healthz` (public, minimal: `{ok, service, ready}`) · `/internal/status` (detailed, only when `STATUS_TOKEN` is set; bearer token; never callable from a browser) · `/v1/perps/markets` · `/v1/perps/candles?market=SOL&tf=1h&limit=200[&before=<unix>][&includeForming=1]` · `/v1/perps/readiness?market=SOL`
+Perps gateway (r115, see `docs/R115-GATEWAY.md`): `GET /v1/perps/jup/positions?walletAddress=<base58>&includeClosedPositions=false` · `GET /v1/perps/jup/market-stats?mint=<SOL|ETH|BTC mint>` (served from this service's recorder) · `POST /v1/perps/jup/positions/increase|decrease` and `POST /v1/perps/jup/execute` — **off by default** (`403 execution_disabled`).
 WebSocket: `wss://<host>/perps/live` (messages `perps_hello`, `perps_subscribed`, `perps_tick`, `perps_candle`, `perps_status`, `perps_error`, `pong`).
 Full contracts: `docs/IMPLEMENTATION-REPORT.md`.
 
