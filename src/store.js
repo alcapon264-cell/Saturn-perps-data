@@ -88,6 +88,24 @@ export function createStore(db) {
       return total;
     },
     async ping() { const r = await db.query('SELECT 1 AS ok'); return r.rows.length === 1; },
+    /* ---- gateway idempotency (migration 002). claimExec -> true only for the FIRST request with this signature. ---- */
+    async claimExec({ signature, wallet, action, msgHash }) {
+      const r = await db.query("INSERT INTO perps_exec_requests(signature, wallet, action, msg_hash, state) VALUES ($1,$2,$3,$4,'pending') ON CONFLICT (signature) DO NOTHING RETURNING signature", [signature, wallet, action, msgHash]);
+      return r.rows.length === 1;
+    },
+    async getExec(signature) {
+      const r = await db.query('SELECT signature, wallet, action, msg_hash, state, upstream_status FROM perps_exec_requests WHERE signature = $1', [signature]);
+      return r.rows[0] || null;
+    },
+    /* state moves only out of 'pending'; a recorded outcome is never overwritten */
+    async settleExec(signature, state, upstreamStatus = null) {
+      if (!['submitted', 'rejected', 'unknown'].includes(state)) throw new Error('bad_exec_state');
+      await db.query("UPDATE perps_exec_requests SET state = $2, upstream_status = $3, updated_at = now() WHERE signature = $1 AND state = 'pending'", [signature, state, upstreamStatus]);
+    },
+    async purgeExec(olderThanMs) {
+      const r = await db.query('DELETE FROM perps_exec_requests WHERE created_at < to_timestamp($1) RETURNING 1', [ts(olderThanMs)]);
+      return r.rows.length;
+    },
     TF_SEC
   };
 }

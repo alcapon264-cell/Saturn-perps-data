@@ -5,7 +5,8 @@ import { MARKET_KEYS, SOURCE } from './config.js';
 import { createMetrics } from './metrics.js';
 import { createLimiter, clientIp } from './limits.js';
 import { createStore } from './store.js';
-import { createJupiterClient } from './jupiter.js';
+import { createJupiterClient, createJupiterGateway } from './jupiter.js';
+import { createGateway } from './gateway.js';
 import { createCandleEngine } from './engine.js';
 import { createRecorder } from './recorder.js';
 import { createHttpHandler } from './http.js';
@@ -41,8 +42,11 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const marketsView = async () => Promise.all(MARKET_KEYS.map(marketView));
 
   const limiter = createLimiter({ now });
+  /* Perps gateway: positions via Jupiter, live price from this service's own recorder, execution routes off unless explicitly enabled. Writes (idempotency rows) use the primary role. */
+  const gwUpstream = createJupiterGateway({ fetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, ...(jupiterBase ? { base: jupiterBase } : {}) });
+  const gateway = cfg.gateway ? createGateway({ cfg, store, upstream: gwUpstream, limiter, now, metrics, getLivePrice: marketView }) : null;
   const handler = createHttpHandler({
-    cfg, store: readStore, limiter, now, metrics, isShuttingDown: () => shuttingDown,
+    cfg, store: readStore, limiter, now, metrics, gateway, isShuttingDown: () => shuttingDown,
     getMarketsView: marketsView,
     getReadiness: async m => { try { const v = await marketView(m); return await computeReadiness({ store: readStore, cfg, market: m, now, marketState: v.state === 'no_data' ? 'no_data' : v.state }); } catch (e) { if (e && e.dbUnavailable) throw e; const x = new Error('db_unavailable'); x.dbUnavailable = true; throw x; } },
     /* PUBLIC: minimal liveness only. Nothing operational, nothing about markets, queues, thresholds or versions. */
@@ -107,7 +111,8 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     const o = await store.purge('perps_observations', 'observed_at', t - cfg.retention.observationsDays * 86400000);
     const r = await store.purge('perps_rejects', 'observed_at', t - cfg.retention.logDays * 86400000);
     const f = await store.purge('perps_fetch_log', 'at', t - cfg.retention.logDays * 86400000);
-    await store.setMeta('retention_last_day', day); log('retention', { observations: o, rejects: r, fetchLog: f });
+    const x = await store.purgeExec(t - 30 * 86400000).catch(() => 0);
+    await store.setMeta('retention_last_day', day); log('retention', { observations: o, rejects: r, fetchLog: f, execRequests: x });
   }
 
   async function start({ port = cfg.port, host = '0.0.0.0' } = {}) {
@@ -130,5 +135,5 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     await db.close().catch(() => {}); if (readerDb) await readerDb.close().catch(() => {});
   }
 
-  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
+  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
 }

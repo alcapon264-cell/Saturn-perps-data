@@ -1,4 +1,5 @@
-/* Read-only HTTP API. GET/OPTIONS only. No write endpoint, no admin endpoint, no user-supplied host/mint/SQL. */
+/* HTTP API. Market data routes are GET-only. The only routes that accept POST are the Perps gateway routes under /v1/perps/jup/,
+ * which are handled entirely by src/gateway.js (and are disabled unless execution is explicitly enabled). No admin endpoint, no user-supplied host/mint/SQL. */
 import { MARKET_KEYS, SOURCE } from './config.js';
 import { TFS, isTf } from './time.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -6,7 +7,7 @@ import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, getReadiness, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, getReadiness, gateway = null, isShuttingDown = () => false }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -28,11 +29,17 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
         if (!cfg.allowedOrigins.has(origin)) return err(res, 403, 'origin_not_allowed');
         cors['access-control-allow-origin'] = origin; cors.vary = 'Origin';
       }
-      if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600' }); return res.end(); }
-      if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
       let url; try { url = new URL(req.url || '/', 'http://localhost'); } catch { return err(res, 400, 'bad_request', cors); }
       const path = url.pathname, q = url.searchParams;
+      const isGw = !!gateway && path.startsWith('/v1/perps/jup/');
+      if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'access-control-allow-methods': isGw ? 'GET, POST, OPTIONS' : 'GET, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600' }); return res.end(); }
       const ip = clientIp(req, cfg.http.trustedProxyHops);
+      if (isGw) {
+        if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
+        const [code, body, extra] = await gateway.handle(req, path, q, ip);
+        return send(res, code, body, { ...cors, ...(extra || {}) });
+      }
+      if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
 
       if (path === '/healthz' || path === '/') {
         if (limiter(ip + '|health', 120)) return err(res, 429, 'rate_limited', cors);

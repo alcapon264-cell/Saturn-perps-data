@@ -55,7 +55,18 @@ export function loadConfig(env = process.env) {
     http: { ipLimitPerMin: num(env.HTTP_LIMIT_PER_MIN, 60, { min: 1 }), readinessLimitPerMin: num(env.READINESS_LIMIT_PER_MIN, 10, { min: 1 }), trustedProxyHops: Math.round(num(env.TRUSTED_PROXY_HOPS, 1, { min: 0, max: 5 })) },
     ws: { maxConnPerIp: num(env.WS_MAX_CONN_PER_IP, 20, { min: 1 }), maxMarkets: 3, maxMsgPerWindow: 30, windowMs: 10000, maxPayload: 1024, heartbeatMs: 25000, softBuffer: 256 * 1024, hardBuffer: 1024 * 1024 },
     /* Optional Jupiter API key. The header NAME is deliberately not assumed: set both vars from Jupiter's docs, or neither. */
-    jupiterKeyHeader: env.JUPITER_API_KEY_HEADER || '', jupiterKey: env.JUPITER_API_KEY || ''
+    jupiterKeyHeader: env.JUPITER_API_KEY_HEADER || '', jupiterKey: env.JUPITER_API_KEY || '',
+    /* Perps gateway (/v1/perps/jup/*). Reads are on. The three transaction routes exist but answer 403 execution_disabled unless
+     * PERPS_EXECUTION_ENABLED=1 AND a ticket secret is set. Real-money execution is NOT approved: leave this unset. */
+    gateway: {
+      executionEnabled: /^1$/.test(String(env.PERPS_EXECUTION_ENABLED || '')) && String(env.GATEWAY_TICKET_SECRET || '').length >= 32,
+      ticketSecret: env.GATEWAY_TICKET_SECRET || '',
+      ticketTtlMs: 60000,
+      upstreamPerMin: num(env.GATEWAY_UPSTREAM_PER_MIN, 12, { min: 1, max: 30 }),   /* shared budget for ALL gateway calls to Jupiter (keyless limit is shared with the recorder) */
+      positionsPerMinIp: num(env.GATEWAY_POSITIONS_PER_MIN, 20, { min: 1 }), positionsPerMinWallet: 10,
+      preparePerMinIp: 6, preparePerMinWallet: 4, executePerMinIp: 10, executePerMinWallet: 6,
+      maxBody: 8 * 1024
+    }
   });
 }
 
@@ -66,5 +77,6 @@ export function validateConfig(cfg) {
   if (cfg.statusToken && (cfg.statusToken.length < 24 || !/^[\x21-\x7e]+$/.test(cfg.statusToken))) errs.push('STATUS_TOKEN must be at least 24 printable characters');
   if ((cfg.jupiterKeyHeader && !cfg.jupiterKey) || (!cfg.jupiterKeyHeader && cfg.jupiterKey)) errs.push('JUPITER_API_KEY and JUPITER_API_KEY_HEADER must be set together');
   if (cfg.jupiterKeyHeader && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.jupiterKeyHeader)) errs.push('JUPITER_API_KEY_HEADER has invalid characters');
+  if (cfg.gateway && cfg.gateway.ticketSecret && cfg.gateway.ticketSecret.length < 32) errs.push('GATEWAY_TICKET_SECRET must be at least 32 characters');
   return errs;
 }
