@@ -1,11 +1,12 @@
 /* Read-only HTTP API. GET/OPTIONS only. No write endpoint, no admin endpoint, no user-supplied host/mint/SQL. */
 import { MARKET_KEYS, SOURCE } from './config.js';
 import { TFS, isTf } from './time.js';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getMarketsView, getReadiness, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, getReadiness, isShuttingDown = () => false }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -36,6 +37,16 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       if (path === '/healthz' || path === '/') {
         if (limiter(ip + '|health', 120)) return err(res, 429, 'rate_limited', cors);
         return send(res, 200, await getHealth(), cors);
+      }
+      if (path === '/internal/status') {
+        /* Disabled unless STATUS_TOKEN is configured. Never callable from a browser page (no CORS, Origin refused). Constant-time token check. */
+        if (!cfg.statusToken) return err(res, 404, 'not_found');
+        if (origin) return err(res, 403, 'origin_not_allowed');
+        if (limiter(ip + '|status-attempt', 10)) { metrics?.inc('status_rate_limited'); return err(res, 429, 'rate_limited', { 'retry-after': '60' }); }
+        const m = /^Bearer (\S{1,512})$/.exec(String(req.headers.authorization || ''));
+        const dig = x => createHash('sha256').update(String(x)).digest();
+        if (!m || !timingSafeEqual(dig(m[1]), dig(cfg.statusToken))) { metrics?.inc('status_unauthorized'); return err(res, 401, 'unauthorized'); }
+        return send(res, 200, await getStatus());
       }
       const isRead = path === '/v1/perps/markets' || path === '/v1/perps/candles' || path === '/v1/perps/readiness';
       if (!isRead) return err(res, 404, 'not_found', cors);

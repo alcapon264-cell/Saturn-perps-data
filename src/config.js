@@ -24,6 +24,7 @@ export function loadConfig(env = process.env) {
   const intervalSec = num(env.SAMPLE_INTERVAL_SEC, 15, { min: 5, max: 300 });
   return Object.freeze({
     recorderEnabled: !/^(0|false|off|no)$/i.test(String(env.RECORDER_ENABLED || '1')), /* false = API/WS-only instance that never takes the single-writer lock */
+    statusToken: env.STATUS_TOKEN || '', /* protects GET /internal/status; empty = that endpoint does not exist */
     port: num(env.PORT, 8080, { min: 1, max: 65535 }),
     databaseUrl: env.DATABASE_URL || '',
     readerDatabaseUrl: env.READER_DATABASE_URL || '',
@@ -50,6 +51,7 @@ export function loadConfig(env = process.env) {
 export function validateConfig(cfg) {
   const errs = [];
   if (!cfg.databaseUrl) errs.push('DATABASE_URL is required');
+  if (cfg.statusToken && (cfg.statusToken.length < 24 || !/^[\x21-\x7e]+$/.test(cfg.statusToken))) errs.push('STATUS_TOKEN must be at least 24 printable characters');
   if ((cfg.jupiterKeyHeader && !cfg.jupiterKey) || (!cfg.jupiterKeyHeader && cfg.jupiterKey)) errs.push('JUPITER_API_KEY and JUPITER_API_KEY_HEADER must be set together');
   if (cfg.jupiterKeyHeader && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.jupiterKeyHeader)) errs.push('JUPITER_API_KEY_HEADER has invalid characters');
   return errs;

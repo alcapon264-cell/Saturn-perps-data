@@ -45,7 +45,13 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     cfg, store: readStore, limiter, now, metrics, isShuttingDown: () => shuttingDown,
     getMarketsView: marketsView,
     getReadiness: async m => { try { const v = await marketView(m); return await computeReadiness({ store: readStore, cfg, market: m, now, marketState: v.state === 'no_data' ? 'no_data' : v.state }); } catch (e) { if (e && e.dbUnavailable) throw e; const x = new Error('db_unavailable'); x.dbUnavailable = true; throw x; } },
+    /* PUBLIC: minimal liveness only. Nothing operational, nothing about markets, queues, thresholds or versions. */
     getHealth: async () => {
+      let dbOk = false; try { dbOk = await store.ping(); } catch { dbOk = false; }
+      return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', ready };
+    },
+    /* PROTECTED (bearer token, disabled when STATUS_TOKEN is unset): the detailed operational view. */
+    getStatus: async () => {
       let dbOk = false; try { dbOk = await store.ping(); } catch { dbOk = false; }
       return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', version: 1, epoch, serverTime: Math.floor(now() / 1000), uptimeSec: Math.floor((now() - startedAt) / 1000), source: SOURCE,
         ready, leader, db: { ok: dbOk }, lastInitError, recorder: recorder.summary(), ws: hub.stats(),
