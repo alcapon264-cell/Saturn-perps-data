@@ -27,3 +27,14 @@ The `Origin` header is used only for browser CORS hygiene. Every control above w
 * Positions response shape was never seen live. The frontend cross-checks every position against its on-chain Position account, so a wrong shape or unit fails closed.
 * `TRUSTED_PROXY_HOPS` on Render still unverified (F1).
 * In-memory limits reset on restart (single instance). Idempotency is durable.
+
+## r117 — execution integration repair
+* **Request mapping fixed.** Saturn-internal fields (`asset`, `inputToken`, `inputTokenAmount`, `receiveToken`) are no longer forwarded.
+  `src/perps-program.js` `mapIncrease` / `mapDecrease` build Jupiter's fields:
+  increase → `walletAddress, marketMint, inputMint, collateralMint (long: market mint, short: USDC), collateralTokenDelta (INPUT token, atomic, unchanged), side, leverage, maxSlippageBps[, transactionType]`;
+  decrease → `positionPubkey, desiredMint, entirePosition | sizeUsdDelta (+collateralUsdDelta "0") | collateralUsdDelta (+sizeUsdDelta "0"), maxSlippageBps`.
+  Field names follow the r117 spec; **Jupiter publishes no REST contract, so they are not confirmed by Jupiter.**
+* **Transaction checked against the exact request** (`checkAgainstRequest`): market custody, input/desired mint, side, collateral amount,
+  full/partial/withdraw amounts, Position PDA, PositionRequest PDA (seeds unverified → fail closed).
+* **Code lock.** `EXECUTE_CONTRACT_VERIFIED=false`: environment flags alone cannot enable execution (`403 execution_contract_unverified`).
+* Execute payload `{action, serializedTxBase64}` is unchanged and **unverified**; the route is locked.
