@@ -1,17 +1,17 @@
-# S1 Test Results
+# S1 Test Results (revision 2)
 
-Final run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on Node v22.23.4, PostgreSQL 16.
+Final run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on Node v22.23.4, PostgreSQL 16. S1 is an offline stage: **not production-ready**.
 
-**Result: 89/89 passed, 0 skipped, 0 cancelled.**
+**Result: 92/92 passed, 0 skipped, 0 cancelled.**
 
 ## What these results do and do not prove
 - **Real:** SQL, constraints, migrations, advisory locks, retention and candle maths ran against an actual PostgreSQL 16 server. The HTTP and WebSocket tests used real local TCP sockets (`fetch`, `ws`).
 - **Mock:** every Jupiter response (scripted fake), and time (fake clock). **Jupiter was never contacted.**
 - **Not the production driver:** the `pg` npm package cannot be installed in the offline sandbox. Database tests used a psql-backed harness that inlines parameters; the `createPgDb` adapter was tested against fake `Pool`/`Client` classes only.
 - **Not covered:** Render networking/TLS/`X-Forwarded-For`, multi-day soak behaviour, the future frontend integration, dependency CVEs.
-- **Mutation check:** 10 deliberate code breakages (coverage rule off, max-gap rule off, instant jump acceptance, rewritable complete candles, CORS check removed, readiness always ready, tick on duplicate slot, no clock guard, status spam, forming-valid, ...) were each caught by at least one test. One initial survivor (duplicate-slot tick) led to a strengthened test.
+- **Mutation check:** 14 deliberate code breakages (coverage rule off, max-gap rule off, instant jump acceptance, rewritable complete candles, CORS check removed, readiness always ready, tick on duplicate slot, no clock guard, status spam, forming-valid, status token check removed, status reachable from a browser origin, /healthz returning detail again, status enabled with no token) were each caught by at least one test. One initial survivor (duplicate-slot tick) led to a strengthened test.
 
-## unit.test.js — 20/20 pass
+## unit.test.js — 21/21 pass
 **What:** Pure logic: time, candles, validation, Jupiter client, config, limits  
 **Kind:** MOCK (no network, no database)
 
@@ -33,6 +33,7 @@ Final run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on 
 - PASS — jupiter client: captures rate-limit headers generically; sends API key only when configured, with the configured header name
 - PASS — jupiter client: retry-after parsing
 - PASS — config: defaults, bounds, secrets handling
+- PASS — config: STATUS_TOKEN must be long and printable; empty means the status endpoint is disabled
 - PASS — limits: client IP ignores a spoofed first x-forwarded-for entry
 - PASS — limits: sliding window limiter
 
@@ -76,13 +77,15 @@ Final run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on 
 - PASS — leader loss while running stops the recorder (no split-brain)
 - PASS — clock moving backwards: recording pauses instead of writing out-of-order data
 - PASS — retention: purges old observations/logs, keeps candles; runs once per UTC day
-- PASS — config safety: nothing in health/logs leaks the database URL or API key
+- PASS — config safety: neither the public health route nor the protected status route leaks the database URL, API key or status token; logs are clean
 
-## http.test.js — 11/11 pass
-**What:** Read-only HTTP API over a real socket  
+## http.test.js — 13/13 pass
+**What:** Read-only HTTP API over a real socket, minimal /healthz, protected /internal/status  
 **Kind:** REAL PostgreSQL + REAL local socket + MOCK data/clock
 
-- PASS — healthz: shape, 200, no secrets, no stack traces
+- PASS — healthz is PUBLIC and MINIMAL: only ok/service/ready, no operational detail, no secrets
+- PASS — /internal/status: does not exist unless STATUS_TOKEN is configured
+- PASS — /internal/status: token required (401), never browser-callable (403), attempts rate-limited (429), correct token returns detail without secrets
 - PASS — markets: live / stale / down / no_data; price withheld when down
 - PASS — candles: contract, ordering, completed-only default, includeForming, limit/before, valid flags, no volume field
 - PASS — candles: parameter validation matrix (fuzz)

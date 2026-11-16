@@ -1,5 +1,7 @@
 # S1 Implementation Report — Saturn Perps Data Engine
 
+**Review outcome:** S1 accepted as an *offline implementation stage*. **This is not production-ready**: it has never run against Jupiter, on Render, or with the real `pg` driver (see section 6). Revision 2 applies the review's `/healthz` adjustment (section 3).
+
 Scope of this report: stage **S1 only**. Nothing is deployed, no paid Render resource exists, nothing is connected to the Saturn frontend, and no existing Saturn file was touched. Labels: **VERIFIED** (an automated test in this repo proves it), **BY DESIGN** (true by construction, covered by a static test), **UNVERIFIED** (could not be tested here).
 
 ## 1. S0 approval conditions: status
@@ -22,14 +24,15 @@ Scope of this report: stage **S1 only**. Nothing is deployed, no paid Render res
 Additional conditions: secrets stay server-side (**VERIFIED**: health/log output contains no DB URL or key; nothing here is frontend code). Render cost estimate: see `COST-ESTIMATE.md`. The read-only Jupiter live-check is **written and tested against a stub only** — running it against Jupiter is stage S2 and is yours to do. `SATURN_LIVE_WS_URL`, production backend and frontend: untouched.
 
 ## 2. What was built
-Node 22, ESM, two runtime dependencies (`ws`, `pg`). ~900 lines of service code (src + server.js), ~1,400 lines of tests, 89 tests. Module map is in `README.md`.
+Node 22, ESM, two runtime dependencies (`ws`, `pg`). ~930 lines of service code (src + server.js), ~1,450 lines of tests, 92 tests. Module map is in `README.md`.
 
 Processes in the single service: recorder (per-market timers), candle engine (update on each accepted observation + finalise timer), HTTP server, WebSocket hub, leader-lock supervisor, daily retention job, heartbeat.
 
 ## 3. Implemented contracts
 
 ### HTTP (GET only; CORS = exact-origin allowlist, fail-closed when the list is empty)
-- `GET /healthz` → `{ok, service, version, epoch, serverTime, uptimeSec, source, ready, leader, db:{ok}, lastInitError, recorder:{running, intervalSec, dbDegraded, queued, rateHeaders, markets:{SOL:{state, lastObservationAt, ageMs, price, consecutiveFailures, consecutiveRejects, circuitOpen, suspectFlat, lastOutcome, lastHttpStatus, backoffMs, seq, jumpPending}}}, ws:{clients}, thresholds, metrics}`. HTTP 200 even when the DB is down (`ok:false`) so a platform health check does not restart-loop the process.
+- `GET /healthz` (public, minimal) → `{ok, service:"saturn-perps-data", ready}` and nothing else. HTTP 200 even when the database is down (`ok:false`) so a platform health check does not restart-loop the process. Rate limit 120/min per IP.
+- `GET /internal/status` (protected) → the detailed operational view that `/healthz` used to return: `{ok, service, version, epoch, serverTime, uptimeSec, source, ready, leader, db:{ok}, lastInitError, recorder:{running, intervalSec, dbDegraded, queued, rateHeaders, markets:{SOL:{state, lastObservationAt, ageMs, price, consecutiveFailures, consecutiveRejects, circuitOpen, suspectFlat, lastOutcome, lastHttpStatus, backoffMs, seq, jumpPending}}}, ws:{clients}, thresholds, metrics}`. Controls: **does not exist (404) unless the server env var `STATUS_TOKEN` is set** (≥ 24 printable characters); requires `Authorization: Bearer <token>` compared in constant time (401 otherwise); any request carrying an `Origin` header is refused (403) and no CORS headers are ever sent, so a web page cannot call it; 10 attempts/min per IP (429, correct tokens included, so brute force is throttled); GET only; `no-store`. The token is never logged or returned. It is meant for you / an uptime tool / Render's shell, not for the Saturn frontend.
 - `GET /v1/perps/markets` → `{ok, source, serverTime, markets:[{market, price, observedAt, ageMs, state}]}`; `state ∈ live|stale|down|no_data`; price is `null` when `down` or `no_data`.
 - `GET /v1/perps/candles?market&tf[&limit 1–500, default 200][&before unix][&includeForming=1]` → `{ok, market, tf, source, basis:"sampled", sampleIntervalSec, serverTime, candles:[{t, o, h, l, c, n, coverage, maxGapSec, status, valid}], meta:{firstObservationAt, validCount, returned}}`. Candles ascend by `t` (unix s, UTC); the newest `limit` are returned; no `v` field. Completed candles only unless `includeForming=1`. Invalid-but-complete candles are returned with `valid:false` (the consumer must filter).
 - `GET /v1/perps/readiness?market` → `{ok, serverTime, market, tf:"1h", required:60, validConsecutiveCandles, ready, reason, latestCandleAgeSec, earliestReadyAt, earliestReadyIsEstimate:true}`; `reason ∈ ready|insufficient_history|has_gaps|stale|recorder_down|no_data`.
@@ -74,5 +77,9 @@ Rules (all **VERIFIED**): a message is sent only for a NEW accepted observation 
 - Retention runs inside the leader process once per UTC day; it has only run against test data.
 - No soak test: behaviour over days (memory, table growth, connection churn) is unmeasured until S4.
 
-## 7. Not done (by instruction)
+## 7. Revision 2 (review adjustments)
+- `/healthz` reduced to `{ok, service, ready}`; detail moved to the token-protected `/internal/status` (new env var `STATUS_TOKEN`). No recorder, candle, database or WebSocket behaviour changed; all 89 earlier tests still pass unmodified in meaning (the old health tests were rewritten to the new contract) and 3 new tests were added (92 total). Four deliberate breakages of the new protection were each caught.
+- Wording: S1 is an offline implementation stage; no production-readiness claim is made anywhere.
+
+## 8. Not done (by instruction)
 No deployment, no Render resources, no frontend change, no S2/S3+, no order functionality, no Chaos Labs dependency.
