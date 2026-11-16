@@ -16,8 +16,8 @@
  *   - an ambiguous upstream result (timeout / network / 5xx) is recorded as 'unknown' and NEVER retried; the client checks the chain */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { MARKETS } from './config.js';
-import { parseTx, msgHash, verifyEd25519, b64ToBytes, b58encode, isPubkey } from './solana.js';
-import { inspectPerpsTx, ACTIONS } from './perps-program.js';
+import { parseTx, msgHash, verifyEd25519, b64ToBytes, b58encode, b58decode, isPubkey } from './solana.js';
+import { inspectPerpsTx, checkAgainstRequest, mapIncrease, mapDecrease, ACTIONS, MINT, CONTRACT_BLOCKERS } from './perps-program.js';
 
 const MINT_TO_MARKET = Object.fromEntries(Object.entries(MARKETS).map(([k, v]) => [v, k]));
 const ASSETS = new Set(['SOL', 'ETH', 'BTC']), TOKENS = new Set(['USDC', 'SOL', 'ETH', 'BTC']);
@@ -94,7 +94,7 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
   }
 
   /* ---- transactions ---- */
-  function checkBuilt(r, { kind, wallet, position }) {
+  function checkBuilt(r, { kind, wallet, position, expect }) {
     if (!r.ok) return { err: [r.outcome === 'http' && r.status < 500 ? 502 : 504, { ok: false, error: 'upstream_' + r.outcome, message: clean(r.json && (r.json.message || r.json.error)) || 'Jupiter could not build this transaction.' }] };
     const j = r.json; let t;
     try { if (typeof j.serializedTxBase64 !== 'string' || j.serializedTxBase64.length > 4096) throw 0; t = parseTx(b64ToBytes(j.serializedTxBase64)); } catch { return { err: [502, { ok: false, error: 'upstream_tx_unreadable' }] }; }
@@ -102,6 +102,7 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
     const ins = inspectPerpsTx(t, { wallet: w, kind });
     if (!ins.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ins.why, message: 'Saturn refused the transaction Jupiter built (' + ins.why + '). Nothing was signed.' }] }; }
     if (position && ins.position !== position) return { err: [502, { ok: false, error: 'tx_refused', reason: 'position_mismatch' }] };
+    if (expect) { const ck = checkAgainstRequest(ins, { kind, wallet: w, expect }, b58decode, b58encode); if (!ck.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ck.why, message: 'Saturn refused the transaction Jupiter built (' + ck.why + '). Nothing was signed.' }] }; } }
     if (kind === 'increase' && (typeof j.positionPubkey !== 'string' || j.positionPubkey !== ins.position)) return { err: [502, { ok: false, error: 'tx_refused', reason: 'position_mismatch' }] };
     if (t.sigs[0].some(x => x !== 0)) return { err: [502, { ok: false, error: 'tx_refused', reason: 'already_signed' }] };
     const quote = {}; if (j.quote && typeof j.quote === 'object') { let n = 0; for (const [k, v] of Object.entries(j.quote)) { if (++n > 40) break; if (/^[A-Za-z0-9]{1,40}$/.test(k) && scalar(v)) quote[k] = v; } }
@@ -116,8 +117,9 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
       || typeof b.maxSlippageBps !== 'string' || !/^\d{2,3}$/.test(b.maxSlippageBps) || !(slip >= 10 && slip <= 500) || !isPubkey(b.walletAddress)) return [400, { ok: false, error: 'bad_request' }];
     if (limiter(ip + '|gw-prep', G.preparePerMinIp) || limiter('w:' + b.walletAddress + '|gw-prep', G.preparePerMinWallet)) return [429, { ok: false, error: 'rate_limited', message: 'Too many requests. Wait a moment and try again.' }, { 'retry-after': '30' }];
     if (!budget()) return [503, { ok: false, error: 'upstream_busy' }];
-    const r = await upstream.increase({ asset: b.asset, side: b.side, inputToken: b.inputToken, inputTokenAmount: b.inputTokenAmount, leverage: b.leverage, maxSlippageBps: b.maxSlippageBps, walletAddress: b.walletAddress });
-    const c = checkBuilt(r, { kind: 'increase', wallet: b.walletAddress }); return c.err || [200, c.ok];
+    /* r117: Saturn's request is MAPPED to Jupiter's field names (perps-program.js mapIncrease); Saturn-internal names are never forwarded */
+    const r = await upstream.increase(mapIncrease(b, { transactionType: G.transactionType }));
+    const c = checkBuilt(r, { kind: 'increase', wallet: b.walletAddress, expect: { market: b.asset, side: b.side, inputMint: MINT[b.inputToken], collateralTokenDelta: b.inputTokenAmount } }); return c.err || [200, c.ok];
   }
   async function decrease(b, ip) {
     if (!onlyKeys(b, ['positionPubkey', 'receiveToken', 'entirePosition', 'sizeUsdDelta', 'collateralUsdDelta', 'maxSlippageBps'])) return [400, { ok: false, error: 'bad_request' }];
@@ -127,10 +129,9 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
       || (b.maxSlippageBps !== undefined && (typeof b.maxSlippageBps !== 'string' || !/^\d{2,3}$/.test(b.maxSlippageBps) || Number(b.maxSlippageBps) > 500))) return [400, { ok: false, error: 'bad_request' }];
     if (limiter(ip + '|gw-prep', G.preparePerMinIp) || limiter('p:' + b.positionPubkey + '|gw-prep', G.preparePerMinWallet)) return [429, { ok: false, error: 'rate_limited' }, { 'retry-after': '30' }];
     if (!budget()) return [503, { ok: false, error: 'upstream_busy' }];
-    const body = { positionPubkey: b.positionPubkey, receiveToken: b.receiveToken };
-    for (const k of ['entirePosition', 'sizeUsdDelta', 'collateralUsdDelta', 'maxSlippageBps']) if (b[k] !== undefined) body[k] = b[k];
-    const r = await upstream.decrease(body);
-    const c = checkBuilt(r, { kind: 'decrease', wallet: null, position: b.positionPubkey }); return c.err || [200, c.ok];
+    const r = await upstream.decrease(mapDecrease(b));
+    const expect = { desiredMint: MINT[b.receiveToken], position: b.positionPubkey }; for (const k of ['entirePosition', 'sizeUsdDelta', 'collateralUsdDelta']) if (b[k] !== undefined) expect[k] = b[k];
+    const c = checkBuilt(r, { kind: 'decrease', wallet: null, position: b.positionPubkey, expect }); return c.err || [200, c.ok];
   }
   async function execute(b, ip) {
     if (!onlyKeys(b, ['action', 'serializedTxBase64', 'ticket']) || !(b.action in ACTIONS) || typeof b.serializedTxBase64 !== 'string' || b.serializedTxBase64.length > 4096) return [400, { ok: false, error: 'bad_request' }];
@@ -178,7 +179,7 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
       const m = ROUTES[path]; if (!m) return [404, { ok: false, error: 'not_found' }];
       if (req.method !== m) return [405, { ok: false, error: 'method_not_allowed' }];
       if (m === 'GET') return path.endsWith('/positions') ? positions(q, ip) : marketStats(q);
-      if (!G.executionEnabled) { metrics?.inc('gw_exec_disabled'); return [403, { ok: false, error: 'execution_disabled', message: 'Perps execution is disabled on this service.' }]; }
+      if (!G.executionEnabled) { metrics?.inc('gw_exec_disabled'); return G.executionRequested ? [403, { ok: false, error: 'execution_contract_unverified', message: 'Perps execution is locked: the Jupiter execution contract is not verified.', blockers: CONTRACT_BLOCKERS }] : [403, { ok: false, error: 'execution_disabled', message: 'Perps execution is disabled on this service.' }]; }
       if ([...q.keys()].length) return [400, { ok: false, error: 'bad_request' }];
       let b; try { b = await readBody(req); } catch (e) { return [e.code || 400, { ok: false, error: e.message }]; }
       if (path.endsWith('/increase')) return increase(b, ip);

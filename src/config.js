@@ -1,4 +1,5 @@
 /* Configuration. Everything comes from environment variables or explicit injection; nothing secret is ever hard-coded or logged. */
+import { EXECUTE_CONTRACT_VERIFIED } from './perps-program.js';
 
 export const SOURCE = 'jupiter-perps:market-stats';
 
@@ -59,7 +60,10 @@ export function loadConfig(env = process.env) {
     /* Perps gateway (/v1/perps/jup/*). Reads are on. The three transaction routes exist but answer 403 execution_disabled unless
      * PERPS_EXECUTION_ENABLED=1 AND a ticket secret is set. Real-money execution is NOT approved: leave this unset. */
     gateway: {
-      executionEnabled: /^1$/.test(String(env.PERPS_EXECUTION_ENABLED || '')) && String(env.GATEWAY_TICKET_SECRET || '').length >= 32,
+      /* r117: the environment can only REQUEST execution. It runs only if the Jupiter contract is also marked verified in code (perps-program.js). */
+      executionRequested: /^1$/.test(String(env.PERPS_EXECUTION_ENABLED || '')) && String(env.GATEWAY_TICKET_SECRET || '').length >= 32,
+      executionEnabled: EXECUTE_CONTRACT_VERIFIED && /^1$/.test(String(env.PERPS_EXECUTION_ENABLED || '')) && String(env.GATEWAY_TICKET_SECRET || '').length >= 32,
+      transactionType: /^[a-z][a-z0-9_-]{0,31}$/.test(String(env.GATEWAY_JUP_TRANSACTION_TYPE || '')) ? String(env.GATEWAY_JUP_TRANSACTION_TYPE) : '',   /* unverified; omitted when unset */
       ticketSecret: env.GATEWAY_TICKET_SECRET || '',
       ticketTtlMs: 60000,
       upstreamPerMin: num(env.GATEWAY_UPSTREAM_PER_MIN, 12, { min: 1, max: 30 }),   /* shared budget for ALL gateway calls to Jupiter (keyless limit is shared with the recorder) */
