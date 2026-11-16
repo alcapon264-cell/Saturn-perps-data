@@ -1,0 +1,56 @@
+/* Configuration. Everything comes from environment variables or explicit injection; nothing secret is ever hard-coded or logged. */
+
+export const SOURCE = 'jupiter-perps:market-stats';
+
+/* Fixed server-side market table. Users can never supply a mint, host or path. (Same mints as the Saturn R115 adapter.) */
+export const MARKETS = Object.freeze({
+  SOL: 'So11111111111111111111111111111111111111112',
+  ETH: '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs',
+  BTC: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh'
+});
+export const MARKET_KEYS = Object.freeze(Object.keys(MARKETS));
+
+export const JUPITER_HOST = 'perps-api.jup.ag';
+export const JUPITER_BASE = 'https://perps-api.jup.ag/v1';
+
+const num = (v, d, { min = -Infinity, max = Infinity } = {}) => {
+  if (v == null || v === '') return d;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= min && n <= max ? n : d;
+};
+const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+
+export function loadConfig(env = process.env) {
+  const intervalSec = num(env.SAMPLE_INTERVAL_SEC, 15, { min: 5, max: 300 });
+  return Object.freeze({
+    recorderEnabled: !/^(0|false|off|no)$/i.test(String(env.RECORDER_ENABLED || '1')), /* false = API/WS-only instance that never takes the single-writer lock */
+    port: num(env.PORT, 8080, { min: 1, max: 65535 }),
+    databaseUrl: env.DATABASE_URL || '',
+    readerDatabaseUrl: env.READER_DATABASE_URL || '',
+    allowedOrigins: new Set(list(env.ALLOWED_ORIGINS)),
+    intervalSec,
+    timeoutMs: Math.min(num(env.FETCH_TIMEOUT_MS, 8000, { min: 1000, max: 30000 }), Math.max(1000, intervalSec * 1000 - 1000)),
+    maxRps: num(env.MAX_REQUESTS_PER_SEC, 0.25, { min: 0.01, max: 0.5 }), /* hard ceiling 0.5 = the portal's stated keyless limit */
+    backoffMaxMs: num(env.BACKOFF_MAX_MS, 10 * 60 * 1000, { min: 1000 }),
+    staleMult: 2.5, downSec: 300,
+    coverageMin: num(env.COVERAGE_MIN, 0.8, { min: 0.5, max: 1 }),
+    jumpPct: num(env.JUMP_PCT, 20, { min: 1, max: 100 }),
+    jumpConfirm: Math.round(num(env.JUMP_CONFIRM, 3, { min: 2, max: 10 })),
+    confirmTolPct: num(env.CONFIRM_TOL_PCT, 5, { min: 0.1, max: 20 }),
+    maxPrice: 1e9,
+    readinessRequired: 60,
+    retention: { observationsDays: num(env.RETAIN_OBS_DAYS, 35, { min: 8 }), logDays: num(env.RETAIN_LOG_DAYS, 7, { min: 1 }) },
+    http: { ipLimitPerMin: num(env.HTTP_LIMIT_PER_MIN, 60, { min: 1 }), readinessLimitPerMin: num(env.READINESS_LIMIT_PER_MIN, 10, { min: 1 }), trustedProxyHops: Math.round(num(env.TRUSTED_PROXY_HOPS, 1, { min: 0, max: 5 })) },
+    ws: { maxConnPerIp: num(env.WS_MAX_CONN_PER_IP, 20, { min: 1 }), maxMarkets: 3, maxMsgPerWindow: 30, windowMs: 10000, maxPayload: 1024, heartbeatMs: 25000, softBuffer: 256 * 1024, hardBuffer: 1024 * 1024 },
+    /* Optional Jupiter API key. The header NAME is deliberately not assumed: set both vars from Jupiter's docs, or neither. */
+    jupiterKeyHeader: env.JUPITER_API_KEY_HEADER || '', jupiterKey: env.JUPITER_API_KEY || ''
+  });
+}
+
+export function validateConfig(cfg) {
+  const errs = [];
+  if (!cfg.databaseUrl) errs.push('DATABASE_URL is required');
+  if ((cfg.jupiterKeyHeader && !cfg.jupiterKey) || (!cfg.jupiterKeyHeader && cfg.jupiterKey)) errs.push('JUPITER_API_KEY and JUPITER_API_KEY_HEADER must be set together');
+  if (cfg.jupiterKeyHeader && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.jupiterKeyHeader)) errs.push('JUPITER_API_KEY_HEADER has invalid characters');
+  return errs;
+}
