@@ -56,7 +56,7 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
 
       if (path === '/v1/perps/markets') {
         const v = await cached('markets', 1000, getMarketsView);
-        return send(res, 200, { ok: true, source: SOURCE, serverTime: Math.floor(now() / 1000), markets: v }, cors);
+        return send(res, 200, { ok: true, source: SOURCE, timeBasis: 'receive_time', serverTime: Math.floor(now() / 1000), markets: v }, cors);
       }
 
       const market = String(q.get('market') || '').toUpperCase();
@@ -82,7 +82,7 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       });
       return send(res, 200, {
         ok: true, market, tf, source: SOURCE, basis: 'sampled', sampleIntervalSec: cfg.intervalSec, serverTime: Math.floor(now() / 1000),
-        candles: data.candles, meta: { firstObservationAt: data.first == null ? null : Math.floor(data.first / 1000), validCount: data.validCount, returned: data.candles.length }
+        candles: data.candles, meta: { timeBasis: 'receive_time', firstObservationAt: data.first == null ? null : Math.floor(data.first / 1000), validCount: data.validCount, returned: data.candles.length }
       }, cors);
     } catch (e) {
       metrics?.inc('http_errors');

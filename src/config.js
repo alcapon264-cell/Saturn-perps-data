@@ -10,6 +10,11 @@ export const MARKETS = Object.freeze({
 });
 export const MARKET_KEYS = Object.freeze(Object.keys(MARKETS));
 
+/* Magnitude guard (S2 finding). Deliberately wide (about 100x either way around the prices seen live on 2026-11-16: SOL 70.8, ETH 1,807, BTC 64,423).
+ * It exists to stop a unit/scale change (e.g. an x1e6 or x1e-6 price) from being accepted as the first observation, before the jump filter has a baseline.
+ * Override per market with PRICE_RANGE_SOL="min,max" etc. */
+export const DEFAULT_PRICE_RANGE = Object.freeze({ SOL: [0.5, 50000], ETH: [20, 500000], BTC: [1000, 5000000] });
+
 export const JUPITER_HOST = 'perps-api.jup.ag';
 export const JUPITER_BASE = 'https://perps-api.jup.ag/v1';
 
@@ -22,7 +27,13 @@ const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 
 export function loadConfig(env = process.env) {
   const intervalSec = num(env.SAMPLE_INTERVAL_SEC, 15, { min: 5, max: 300 });
+  const priceRange = {};
+  for (const m of Object.keys(MARKETS)) {
+    const v = env['PRICE_RANGE_' + m]; const [lo, hi] = v ? String(v).split(',').map(Number) : DEFAULT_PRICE_RANGE[m];
+    priceRange[m] = Number.isFinite(lo) && Number.isFinite(hi) && lo > 0 && hi > lo ? [lo, hi] : null;   /* null = invalid override, reported by validateConfig */
+  }
   return Object.freeze({
+    priceRange,
     recorderEnabled: !/^(0|false|off|no)$/i.test(String(env.RECORDER_ENABLED || '1')), /* false = API/WS-only instance that never takes the single-writer lock */
     statusToken: env.STATUS_TOKEN || '', /* protects GET /internal/status; empty = that endpoint does not exist */
     port: num(env.PORT, 8080, { min: 1, max: 65535 }),
@@ -51,6 +62,7 @@ export function loadConfig(env = process.env) {
 export function validateConfig(cfg) {
   const errs = [];
   if (!cfg.databaseUrl) errs.push('DATABASE_URL is required');
+  for (const [m, r] of Object.entries(cfg.priceRange)) if (!r) errs.push('PRICE_RANGE_' + m + ' must be "min,max" with 0 < min < max');
   if (cfg.statusToken && (cfg.statusToken.length < 24 || !/^[\x21-\x7e]+$/.test(cfg.statusToken))) errs.push('STATUS_TOKEN must be at least 24 printable characters');
   if ((cfg.jupiterKeyHeader && !cfg.jupiterKey) || (!cfg.jupiterKeyHeader && cfg.jupiterKey)) errs.push('JUPITER_API_KEY and JUPITER_API_KEY_HEADER must be set together');
   if (cfg.jupiterKeyHeader && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.jupiterKeyHeader)) errs.push('JUPITER_API_KEY_HEADER has invalid characters');

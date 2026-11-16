@@ -41,3 +41,10 @@ export function createJumpFilter({ jumpPct = 20, confirm = 3, confirmTolPct = 5 
     }
   };
 }
+
+/* Magnitude plausibility per market. -> {ok:true} | {ok:false, reason:'implausible', detail} */
+export function checkPlausible(price, range) {
+  if (!range) return { ok: true };
+  if (price < range[0] || price > range[1]) return { ok: false, reason: 'implausible', detail: 'price_outside_market_range ' + range[0] + '..' + range[1] };
+  return { ok: true };
+}

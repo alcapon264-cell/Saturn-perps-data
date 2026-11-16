@@ -2,13 +2,13 @@
  * It never back-fills: a missed slot stays missed. It never retries in a tight loop: failures back off; a global token bucket caps request rate. */
 import { MARKETS, MARKET_KEYS, SOURCE } from './config.js';
 import { slotMs, bucketEndMs } from './time.js';
-import { parseMarketStats, createJumpFilter } from './validate.js';
+import { parseMarketStats, createJumpFilter, checkPlausible } from './validate.js';
 
 export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, rand = Math.random, metrics, log = () => {}, onTick = () => {}, onObservationStored = async () => {}, onStateChange = () => {} }) {
   const intervalMs = cfg.intervalSec * 1000;
   const S = Object.fromEntries(MARKET_KEYS.map((m, i) => [m, {
     market: m, idx: i, inFlight: null, failures: 0, rejects: 0, backoffUntil: 0, timer: null, nextAt: 0,
-    lastAcceptedMs: null, lastPrice: null, lastAttemptMs: null, lastOutcome: null, lastStatus: null, seq: 0, flat: 0, lastState: 'no_data',
+    lastAcceptedMs: null, lastPrice: null, lastAttemptMs: null, lastOutcome: null, lastStatus: null, seq: 0, flat: 0, maxFlat: 0, lastChangeMs: null, lastState: 'no_data',
     filter: createJumpFilter({ jumpPct: cfg.jumpPct, confirm: cfg.jumpConfirm, confirmTolPct: cfg.confirmTolPct })
   }]));
   let maxClock = 0;
@@ -68,6 +68,8 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
       s.failures = 0;
       const p = parseMarketStats(res.json, { maxPrice: cfg.maxPrice });
       if (!p.ok) { s.rejects++; metrics?.inc('reject_' + p.reason); store.insertReject({ market: m, observedMs, reason: p.reason, detail: p.detail }).catch(() => {}); return; }
+      const pl = checkPlausible(p.price, cfg.priceRange && cfg.priceRange[m]);
+      if (!pl.ok) { s.rejects++; metrics?.inc('reject_implausible'); store.insertReject({ market: m, observedMs, reason: 'implausible', detail: pl.detail + ' price=' + p.price }).catch(() => {}); return; }
       const j = s.filter.check(p.price, observedMs);
       if (!j.accept) { s.rejects++; metrics?.inc('reject_' + j.reason); store.insertReject({ market: m, observedMs, reason: j.reason, detail: 'price=' + p.price + ' pending=' + j.pending }).catch(() => {}); return; }
       s.rejects = 0;
@@ -82,7 +84,7 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
         queue.push(obs); inserted = true;
       }
       if (!inserted) { metrics?.inc('duplicate_slot'); return; }
-      const prev = s.lastPrice; s.lastAcceptedMs = observedMs; s.lastPrice = p.price; s.seq++; s.flat = prev === p.price ? s.flat + 1 : 0;
+      const prev = s.lastPrice; s.lastAcceptedMs = observedMs; s.lastPrice = p.price; s.seq++; s.flat = prev === p.price ? s.flat + 1 : 0; if (s.flat > s.maxFlat) s.maxFlat = s.flat; if (prev !== p.price) s.lastChangeMs = observedMs;
       metrics?.inc('observations_accepted');
       onTick({ market: m, price: p.price, observedAt: Math.floor(observedMs / 1000), observedMs, seq: s.seq, persisted });
       if (persisted) { try { await onObservationStored(m, observedMs); } catch (e) { metrics?.inc('candle_update_errors'); log('candle_update_failed', m, e && e.message); } }
@@ -121,7 +123,7 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
     running, intervalSec: cfg.intervalSec, dbDegraded, queued: queue.length, rateHeaders: lastRate,
     markets: Object.fromEntries(MARKET_KEYS.map(m => { const s = S[m], t = now(); return [m, {
       state: stateOf(m, t), lastObservationAt: s.lastAcceptedMs == null ? null : Math.floor(s.lastAcceptedMs / 1000), ageMs: s.lastAcceptedMs == null ? null : t - s.lastAcceptedMs,
-      price: s.lastPrice, consecutiveFailures: s.failures, consecutiveRejects: s.rejects, circuitOpen: s.failures >= 5, suspectFlat: s.flat >= 20,
+      price: s.lastPrice, consecutiveFailures: s.failures, consecutiveRejects: s.rejects, circuitOpen: s.failures >= 5, suspectFlat: s.flat >= 20, unchangedRun: s.flat, maxUnchangedRun: s.maxFlat, lastPriceChangeAt: s.lastChangeMs == null ? null : Math.floor(s.lastChangeMs / 1000),
       lastOutcome: s.lastOutcome, lastHttpStatus: s.lastStatus, backoffMs: Math.max(0, s.backoffUntil - t), seq: s.seq, jumpPending: s.filter.pendingCount }]; }))
   });
   return Object.freeze({ start, stop, runOnce, summary, stateOf, checkState, flushQueue, seed, get running() { return running; }, _S: S, _queue: queue, SOURCE });
