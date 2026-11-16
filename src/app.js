@@ -63,6 +63,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const wss = new WebSocketServer({ noServer: true, maxPayload: cfg.ws.maxPayload });
   const ipConns = new Map();
   server.on('upgrade', (req, socket, head) => {
+    socket.on('error', () => {});   /* a reset during the handshake must not surface as an uncaught 'error' event */
     const ip = clientIp(req, cfg.http.trustedProxyHops), o = req.headers.origin;
     const bad = req.url !== '/perps/live' || (o && !cfg.allowedOrigins.has(o)) || shuttingDown || (ipConns.get(ip) || 0) >= cfg.ws.maxConnPerIp || limiter(ip + '|ws-upgrade', 30);
     if (bad) { metrics.inc('ws_upgrade_refused'); socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }

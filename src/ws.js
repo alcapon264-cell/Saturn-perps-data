@@ -21,7 +21,7 @@ export function createHub({ cfg, now = Date.now, metrics, snapshot, epoch, setIn
     const c = { id: 'c' + nextId++, ws, ip, markets: new Set(), tfs: new Set(), times: [], alive: true, closed: false };
     clients.add(c); metrics?.inc('ws_connected');
     raw(c, { type: 'perps_hello', v: 1, epoch, serverTime: Math.floor(now() / 1000), markets: MARKET_KEYS, intervalSec: cfg.intervalSec, source: SOURCE, timeframes: TFS });
-    ws.on('message', d => onMessage(c, d));
+    ws.on('message', d => { onMessage(c, d).catch(() => { metrics?.inc('ws_handler_errors'); }); });
     ws.on('pong', () => { c.alive = true; });
     const done = () => { if (c.closed) return; c.closed = true; clients.delete(c); };
     ws.on('close', done); ws.on('error', done);
@@ -40,8 +40,11 @@ export function createHub({ cfg, now = Date.now, metrics, snapshot, epoch, setIn
       let tfs = ['1h']; if (m.tfs !== undefined) { if (!Array.isArray(m.tfs) || m.tfs.length > TFS.length || !m.tfs.every(isTf)) return err(c, 'bad_tf'); tfs = [...new Set(m.tfs)]; }
       if (new Set([...c.markets, ...mk]).size > L.maxMarkets) return err(c, 'too_many_markets');
       mk.forEach(x => c.markets.add(x)); tfs.forEach(x => c.tfs.add(x));
-      const snap = {}; for (const x of mk) snap[x] = await snapshot(x);
-      return void raw(c, { type: 'perps_subscribed', markets: [...c.markets], tfs: [...c.tfs], snapshot: snap });
+      /* A failed snapshot lookup (database down) must not crash the process or leave the client without an answer: the subscription stands,
+       * the snapshot for that market is null (nothing is invented) and snapshotOk=false tells the client not to treat the ack as fresh data. */
+      const snap = {}; let snapshotOk = true;
+      for (const x of mk) { try { snap[x] = await snapshot(x); } catch { snap[x] = null; snapshotOk = false; metrics?.inc('ws_snapshot_failed'); } }
+      return void raw(c, { type: 'perps_subscribed', markets: [...c.markets], tfs: [...c.tfs], snapshot: snap, snapshotOk });
     }
     if (m.type === 'unsubscribe') {
       if (!Array.isArray(m.markets)) return err(c, 'bad_markets');
