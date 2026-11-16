@@ -2,7 +2,7 @@
 
 Records Jupiter Perps `GET /v1/market-stats` prices for SOL, ETH and BTC, builds **sampled** OHLC candles from the recorded observations only, and serves them through a read-only HTTP API and a **separate** Perps WebSocket. It places no orders, holds no wallets and does not touch any existing Saturn service.
 
-**Status: stage S1 (built and tested against mocks). Not deployed. Not connected to the Saturn frontend.**
+**Status: stage S1 accepted as an offline implementation (built and tested against mocks). NOT production-ready. Not deployed. Not connected to the Saturn frontend.**
 
 ## What it will and will not do
 - Samples every `SAMPLE_INTERVAL_SEC` (default 15 s), staggered per market, capped at 0.25 requests/s, with automatic backoff on 429/5xx/timeouts.
@@ -27,12 +27,12 @@ src/http.js ws.js      read-only API / Perps WebSocket hub
 src/app.js             wiring, leader lock, timers, retention, shutdown
 migrations/001_init.sql
 scripts/live-check.mjs, live-check.html   read-only Jupiter check (run by you, stage S2)
-tests/                 89 automated tests (see docs/TEST-RESULTS.md)
-docs/                  implementation report, security report, cost estimate
+tests/                 92 automated tests (see docs/TEST-RESULTS.md)
+docs/                  implementation report, security report, cost estimate, S2 live-check guide
 ```
 
 ## Endpoints (all GET, JSON)
-`/healthz` · `/v1/perps/markets` · `/v1/perps/candles?market=SOL&tf=1h&limit=200[&before=<unix>][&includeForming=1]` · `/v1/perps/readiness?market=SOL`
+`/healthz` (public, minimal: `{ok, service, ready}`) · `/internal/status` (detailed, only when `STATUS_TOKEN` is set; bearer token; never callable from a browser) · `/v1/perps/markets` · `/v1/perps/candles?market=SOL&tf=1h&limit=200[&before=<unix>][&includeForming=1]` · `/v1/perps/readiness?market=SOL`
 WebSocket: `wss://<host>/perps/live` (messages `perps_hello`, `perps_subscribed`, `perps_tick`, `perps_candle`, `perps_status`, `perps_error`, `pong`).
 Full contracts: `docs/IMPLEMENTATION-REPORT.md`.
 
