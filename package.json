@@ -1,0 +1,17 @@
+{
+  "name": "saturn-perps-data",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent Saturn Perps data engine: records Jupiter Perps /market-stats prices, builds sampled OHLC candles, serves a read-only HTTP API and a separate Perps WebSocket. Read-only: no orders, no wallets.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "live-check": "node scripts/live-check.mjs"
+  },
+  "dependencies": {
+    "pg": "^8.13.0",
+    "ws": "^8.18.3"
+  }
+}
