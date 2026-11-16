@@ -6,7 +6,8 @@ import { generateKeyPairSync, sign as edSign } from 'node:crypto';
 import { clusterUp } from './helpers/pg-local.js';
 import { makeEnv, fakeJupiter, MARKETS } from './helpers/harness.js';
 import { b58encode, b58decode, parseTx } from '../src/solana.js';
-import { PERPS_PROGRAM, JLP_POOL, CUSTODY, DISC, TOKEN_PROGRAM, SYSTEM_PROGRAM, ATA_PROGRAM, COMPUTE_BUDGET } from '../src/perps-program.js';
+import { PERPS_PROGRAM, JLP_POOL, CUSTODY, DISC, TOKEN_PROGRAM, SYSTEM_PROGRAM, ATA_PROGRAM, COMPUTE_BUDGET, MINT, positionPda, positionRequestPda, EXECUTE_CONTRACT_VERIFIED } from '../src/perps-program.js';
+import { loadConfig } from '../src/config.js';
 
 const HAVE = clusterUp(); const opts = { skip: HAVE ? false : 'no local PostgreSQL available' };
 const TKT = 'test-only-ticket-secret-0123456789abcdef';
@@ -17,12 +18,21 @@ function keypair() {
   return { pub: b58encode(raw), signMsg: m => new Uint8Array(edSign(null, Buffer.from(m), privateKey)) };
 }
 const cu16 = n => n < 128 ? [n] : [(n & 127) | 128, n >> 7];
-/* builds a legacy transaction with one Jupiter Perps market-request instruction (16 accounts) + optional extra program */
-function buildTx({ wallet, kind = 'increase', position = rnd(), custody = CUSTODY.SOL, collateral = CUSTODY.SOL, extraProgram = null, payer = null, owner = null, pool = JLP_POOL }) {
-  const roles = [owner || wallet, rnd(), rnd(), pool, position, rnd(), rnd(), custody, collateral, rnd(), PERPS_PROGRAM, TOKEN_PROGRAM, ATA_PROGRAM, SYSTEM_PROGRAM, rnd(), PERPS_PROGRAM];
+/* builds a legacy transaction with one Jupiter Perps market-request instruction (16 accounts, real PDAs, real argument bytes) */
+const u64 = v => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(v)); return [...b]; };
+function buildTx({ wallet, kind = 'increase', side = 'long', market = 'SOL', input = 'USDC', amount = '25000000', position = null, custody = null, collateral = null, extraProgram = null, payer = null, owner = null, pool = JLP_POOL,
+  argKind = null, argSide = null, counter = 7, request = null, swapOwnerFunding = false, entire = false, sizeDelta = '0', collDelta = '0' }) {
+  custody = custody || CUSTODY[market]; collateral = collateral || (side === 'long' ? CUSTODY[market] : CUSTODY.USDC);
+  position = position || positionPda({ owner: wallet, custody, collateralCustody: collateral, side }, b58decode, b58encode);
+  const req = request || positionRequestPda({ position, counter, change: kind }, b58decode, b58encode);
+  const mint = MINT[input], funding = rnd();
+  const roles = [owner || wallet, funding, rnd(), pool, position, req, rnd(), custody, collateral, mint, PERPS_PROGRAM, TOKEN_PROGRAM, ATA_PROGRAM, SYSTEM_PROGRAM, rnd(), PERPS_PROGRAM];
+  if (swapOwnerFunding) [roles[0], roles[1]] = [roles[1], roles[0]];
   const keys = [payer || wallet]; const idx = k => { let i = keys.indexOf(k); if (i < 0) { keys.push(k); i = keys.length - 1; } return i; };
   const accIdx = roles.map(idx); const progIdx = idx(PERPS_PROGRAM); const cbIdx = idx(COMPUTE_BUDGET); const exIdx = extraProgram ? idx(extraProgram) : -1;
-  const data = [...DISC[kind], ...new Array(40).fill(1)];
+  const args = kind === 'increase' ? [...u64(125000000), ...u64(amount), (argSide || side) === 'long' ? 1 : 2, ...u64(151000000), 0, ...u64(counter)]
+    : [...u64(collDelta), ...u64(sizeDelta), ...u64(147000000), 0, ...(entire ? [1, 1] : [0]), ...u64(counter)];
+  const data = [...DISC[argKind || kind], ...args];
   const ixs = [[cbIdx, [], [2, 0, 0, 0, 0]], [progIdx, accIdx, data]]; if (exIdx >= 0) ixs.push([exIdx, [], [9]]);
   const msg = [1, 0, keys.length - 1, ...cu16(keys.length), ...keys.flatMap(k => [...b58decode(k)]), ...b58decode(rnd()), ...cu16(ixs.length)];
   for (const [p, a, d] of ixs) msg.push(p, ...cu16(a.length), ...a, ...cu16(d.length), ...d);
@@ -48,7 +58,10 @@ const J = (status, o) => new Response(JSON.stringify(o), { status, headers: { 'c
 
 async function boot({ exec = false, env = {} } = {}) {
   const jup = gwJupiter();
-  const e = await makeEnv({ jup, env: { RECORDER_ENABLED: '0', ...(exec ? { PERPS_EXECUTION_ENABLED: '1', GATEWAY_TICKET_SECRET: TKT } : {}), ...env }, init: false });
+  const envv = { RECORDER_ENABLED: '0', ...(exec ? { PERPS_EXECUTION_ENABLED: '1', GATEWAY_TICKET_SECRET: TKT } : {}), ...env };
+  /* TEST ONLY: the code lock (EXECUTE_CONTRACT_VERIFIED=false) is bypassed by injecting the config, so the safety machinery can be exercised against MOCKED Jupiter */
+  const cfgOverrides = exec ? { gateway: { ...loadConfig({ DATABASE_URL: 'x', ...envv }).gateway, executionEnabled: true } } : {};
+  const e = await makeEnv({ jup, env: envv, cfgOverrides, init: false });
   const port = await e.app.start({ port: 0, host: '127.0.0.1' }); e.base = 'http://127.0.0.1:' + port; e.g = jup.g;
   e.get = (p, h = {}) => fetch(e.base + p, { headers: h });
   e.post = (p, body, h = {}) => fetch(e.base + p, { method: 'POST', headers: { 'content-type': 'application/json', ...h }, body: typeof body === 'string' ? body : JSON.stringify(body) });
@@ -109,14 +122,22 @@ test('prepare (execution enabled in TEST only): strict schema, size/type limits,
     assert.equal((await e.post(P, JSON.stringify({ ...incBody(), pad: 'x'.repeat(9000) }))).status, 413);
     assert.equal(e.g.calls.length, 0, 'invalid requests never reach Jupiter');
     const ok = await json(await e.post(P, incBody())); assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.match(ok.body.saturnTicket, /^[A-Za-z0-9_-]+\.[0-9a-f]{64}$/); assert.ok(!('evil' in ok.body.quote));
-    assert.deepEqual(e.g.calls[0].body, incBody(), 'exactly the validated fields are forwarded');
-    const refuse = async (t, reason) => { e.clock.t += 61000; tx = t; e.g.script['/v1/positions/increase'] = () => J(200, { serializedTxBase64: b64(tx.unsigned), positionPubkey: tx.position, quote: {} }); const r = await json(await e.post(P, incBody(W.pub, { inputTokenAmount: String(1000 + Math.floor(Math.random() * 1e6)) }))); assert.equal(r.status, 502, reason); assert.equal(r.body.reason, reason); };
+    assert.deepEqual(e.g.calls[0].body, { walletAddress: W.pub, marketMint: MINT.SOL, inputMint: MINT.USDC, collateralMint: MINT.SOL, collateralTokenDelta: '25000000', side: 'long', leverage: '5.0', maxSlippageBps: '100' }, 'Saturn fields are MAPPED to Jupiter names; nothing Saturn-internal is forwarded');
+    const refuse = async (t, reason) => { e.clock.t += 61000; tx = t; e.g.script['/v1/positions/increase'] = () => J(200, { serializedTxBase64: b64(tx.unsigned), positionPubkey: tx.position, quote: {} }); const r = await json(await e.post(P, incBody(W.pub))); assert.equal(r.status, 502, reason); assert.equal(r.body.reason, reason); };
     await refuse(buildTx({ wallet: W.pub, extraProgram: rnd() }), 'program_not_allowed');
     await refuse(buildTx({ wallet: W.pub, payer: keypair().pub }), 'fee_payer_not_wallet');
     await refuse(buildTx({ wallet: W.pub, kind: 'decrease' }), 'unexpected_perps_instruction');
     await refuse(buildTx({ wallet: W.pub, owner: keypair().pub }), 'owner_not_wallet');
     await refuse(buildTx({ wallet: W.pub, pool: rnd() }), 'pool_mismatch');
     await refuse(buildTx({ wallet: W.pub, custody: CUSTODY.USDC }), 'custody_not_allowed');
+    await refuse(buildTx({ wallet: W.pub, swapOwnerFunding: true }), 'owner_not_wallet');                    /* invalid account ordering */
+    await refuse(buildTx({ wallet: W.pub, market: 'ETH' }), 'wrong_market');
+    await refuse(buildTx({ wallet: W.pub, argSide: 'short' }), 'wrong_side');
+    await refuse(buildTx({ wallet: W.pub, amount: '25000001' }), 'wrong_collateral_amount');
+    await refuse(buildTx({ wallet: W.pub, input: 'SOL' }), 'wrong_input_mint');
+    await refuse(buildTx({ wallet: W.pub, position: rnd() }), 'position_pda_mismatch');
+    await refuse(buildTx({ wallet: W.pub, request: rnd() }), 'position_request_pda_mismatch');
+    await refuse(buildTx({ wallet: W.pub, argKind: 'decrease' }), 'unexpected_perps_instruction');            /* invalid discriminator */
   } finally { await e.drop(); }
 });
 
@@ -124,7 +145,7 @@ async function prepared(e, kp = W) {
   e.clock.t += 61000;   /* new rate-limit window for each prepared transaction */
   const tx = buildTx({ wallet: kp.pub });
   e.g.script['/v1/positions/increase'] = () => J(200, { serializedTxBase64: b64(tx.unsigned), positionPubkey: tx.position, quote: {} });
-  const r = await json(await e.post('/v1/perps/jup/positions/increase', incBody(kp.pub, { inputTokenAmount: String(1e6 + Math.floor(Math.random() * 1e6)) })));
+  const r = await json(await e.post('/v1/perps/jup/positions/increase', incBody(kp.pub)));
   assert.equal(r.status, 200, JSON.stringify(r.body)); return { tx, ticket: r.body.saturnTicket };
 }
 const EX = '/v1/perps/jup/execute';
@@ -158,7 +179,7 @@ test('execute: durable idempotency - duplicate taps / repeated submissions relay
     const again = await json(await e.post(EX, execBody(signed, ticket))); assert.equal(again.body.duplicate, true); assert.equal(again.body.state, 'submitted');
     const row = (await e.db.rows("SELECT state FROM perps_exec_requests"))[0]; assert.equal(row.state, 'submitted');
     /* a second, fresh instance (empty memory) on the same database, as after a restart or on another instance */
-    e2 = await makeEnv({ db: e.db, jup: gwJupiter(), env: { RECORDER_ENABLED: '0', PERPS_EXECUTION_ENABLED: '1', GATEWAY_TICKET_SECRET: TKT }, init: false });
+    e2 = await makeEnv({ db: e.db, jup: gwJupiter(), env: { RECORDER_ENABLED: '0', PERPS_EXECUTION_ENABLED: '1', GATEWAY_TICKET_SECRET: TKT }, cfgOverrides: { gateway: { ...loadConfig({ DATABASE_URL: 'x', PERPS_EXECUTION_ENABLED: '1', GATEWAY_TICKET_SECRET: TKT }).gateway, executionEnabled: true } }, init: false });
     const port = await e2.app.start({ port: 0, host: '127.0.0.1' });
     const r2 = await json(await fetch('http://127.0.0.1:' + port + EX, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(execBody(signed, ticket)) }));
     assert.equal(r2.body.duplicate, true, 'a fresh instance still knows the signature'); assert.equal(e2.jup.g.calls.length, 0, 'and Jupiter is not called');
@@ -187,5 +208,48 @@ test('execute: an expired ticket is refused before anything is relayed', opts, a
     let n = 0; e.g.script['/v1/transaction/execute'] = () => { n++; return J(200, {}); };
     const { tx, ticket } = await prepared(e); e.clock.t += 61000;
     assert.equal((await json(await e.post(EX, execBody(tx.signedBy(W), ticket)))).body.error, 'ticket_expired'); assert.equal(n, 0);
+  } finally { await e.drop(); }
+});
+
+test('request mapping: long/short collateral mint, input amount stays in INPUT token atomic units, decrease full/partial/withdraw', opts, async () => {
+  const e = await boot({ exec: true }); try {
+    let tx = null; e.g.script['/v1/positions/increase'] = () => J(200, { serializedTxBase64: b64(tx.unsigned), positionPubkey: tx.position, quote: {} });
+    /* short ETH paid with 0.5 SOL (500000000 lamports, 9 decimals): collateral is USDC, input is SOL, the amount is forwarded unchanged */
+    tx = buildTx({ wallet: W.pub, side: 'short', market: 'ETH', input: 'SOL', amount: '500000000' });
+    const r = await json(await e.post('/v1/perps/jup/positions/increase', incBody(W.pub, { asset: 'ETH', side: 'short', inputToken: 'SOL', inputTokenAmount: '500000000', leverage: '3.0' })));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(e.g.calls.at(-1).body, { walletAddress: W.pub, marketMint: MINT.ETH, inputMint: MINT.SOL, collateralMint: MINT.USDC, collateralTokenDelta: '500000000', side: 'short', leverage: '3.0', maxSlippageBps: '100' });
+    /* decrease */
+    const pos = positionPda({ owner: W.pub, custody: CUSTODY.SOL, collateralCustody: CUSTODY.SOL, side: 'long' }, b58decode, b58encode);
+    let dtx = null; e.g.script['/v1/positions/decrease'] = () => J(200, { serializedTxBase64: b64(dtx.unsigned), quote: {} });
+    const D = '/v1/perps/jup/positions/decrease';
+    for (const [body, build, want] of [
+      [{ positionPubkey: pos, receiveToken: 'USDC', entirePosition: true }, { entire: true }, { positionPubkey: pos, desiredMint: MINT.USDC, entirePosition: true }],
+      [{ positionPubkey: pos, receiveToken: 'SOL', sizeUsdDelta: '500000000', maxSlippageBps: '200' }, { sizeDelta: '500000000', input: 'SOL' }, { positionPubkey: pos, desiredMint: MINT.SOL, sizeUsdDelta: '500000000', collateralUsdDelta: '0', maxSlippageBps: '200' }],
+      [{ positionPubkey: pos, receiveToken: 'USDC', collateralUsdDelta: '25000000', maxSlippageBps: '200' }, { collDelta: '25000000' }, { positionPubkey: pos, desiredMint: MINT.USDC, collateralUsdDelta: '25000000', sizeUsdDelta: '0', maxSlippageBps: '200' }]]) {
+      e.clock.t += 61000; dtx = buildTx({ wallet: W.pub, kind: 'decrease', position: pos, ...build });
+      const d = await json(await e.post(D, body)); assert.equal(d.status, 200, JSON.stringify(d.body)); assert.deepEqual(e.g.calls.at(-1).body, want);
+    }
+    /* partial close for a different amount than asked, or a full close disguised as partial -> refused */
+    e.clock.t += 61000; dtx = buildTx({ wallet: W.pub, kind: 'decrease', position: pos, sizeDelta: '900000000' });
+    assert.equal((await json(await e.post(D, { positionPubkey: pos, receiveToken: 'USDC', sizeUsdDelta: '500000000' }))).body.reason, 'wrong_size_delta');
+    e.clock.t += 61000; dtx = buildTx({ wallet: W.pub, kind: 'decrease', position: pos, entire: true });
+    assert.equal((await json(await e.post(D, { positionPubkey: pos, receiveToken: 'USDC', collateralUsdDelta: '25000000' }))).body.reason, 'wrong_collateral_delta');
+    e.clock.t += 61000; dtx = buildTx({ wallet: W.pub, kind: 'decrease', position: rnd(), entire: true });
+    assert.equal((await json(await e.post(D, { positionPubkey: pos, receiveToken: 'USDC', entirePosition: true }))).body.reason, 'position_mismatch');
+  } finally { await e.drop(); }
+});
+
+test('code lock: environment flags alone cannot enable execution while the Jupiter contract is unverified', opts, async () => {
+  assert.equal(EXECUTE_CONTRACT_VERIFIED, false, 'the shipped build keeps the execution contract unverified');
+  const jup = gwJupiter();
+  const e = await makeEnv({ jup, env: { RECORDER_ENABLED: '0', PERPS_EXECUTION_ENABLED: '1', GATEWAY_TICKET_SECRET: TKT }, init: false });
+  const port = await e.app.start({ port: 0, host: '127.0.0.1' });
+  try {
+    for (const p of ['/v1/perps/jup/positions/increase', '/v1/perps/jup/positions/decrease', '/v1/perps/jup/execute']) {
+      const r = await (await fetch('http://127.0.0.1:' + port + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(incBody()) })).json();
+      assert.equal(r.error, 'execution_contract_unverified', p); assert.ok(Array.isArray(r.blockers) && r.blockers.length >= 3);
+    }
+    assert.equal(jup.g.calls.length, 0);
   } finally { await e.drop(); }
 });

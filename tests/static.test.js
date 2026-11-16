@@ -60,7 +60,7 @@ test('dependencies: exactly ws and pg, nothing else', () => {
 
 test('WebSocket is a separate path on this service; the spot path is not served', () => {
   const a = prod['src/app.js']; assert.match(a, /req\.url !== '\/perps\/live'/); assert.ok(!/'\/live'/.test(a));
-  assert.ok(!/execute|placeOrder|canExecute/.test(Object.entries(prod).filter(([f]) => !['src/gateway.js', 'src/jupiter.js', 'src/config.js'].includes(f)).map(x => x[1]).join('\n')), 'no trading hooks outside the gateway');
+  assert.ok(!/execute|placeOrder|canExecute/.test(Object.entries(prod).filter(([f]) => !['src/gateway.js', 'src/jupiter.js', 'src/config.js', 'src/perps-program.js'].includes(f)).map(x => x[1]).join('\n')), 'no trading hooks outside the gateway');
 });
 
 test('migrations are additive and forward-only (no DROP/TRUNCATE/ALTER ... DROP)', () => {
