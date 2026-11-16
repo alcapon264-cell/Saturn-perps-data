@@ -1,0 +1,81 @@
+# S2 VERIFICATION ONLY. Manually triggered. READ-ONLY GET requests to https://perps-api.jup.ag, no API key, no secrets, nothing is deployed.
+# Runs the existing scripts/live-check.mjs in one-sample chunks (3 requests per chunk: SOL, ETH, BTC, 5 s apart => each market every ~15 s, ~0.2 requests/s).
+# Stops at the first non-200 (incl. 429): at most the remaining markets of that one sample are still requested. Partial results are always uploaded.
+# NOTE: GitHub-hosted runners are datacenter IPs, but NOT Render's egress. This does not prove behaviour from Render.
+name: S2 live check
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Sampling duration in minutes (15 s cadence per market)
+        type: choice
+        options: ['10', '12', '15']
+        default: '12'
+permissions: { contents: read }
+concurrency: { group: s2-live-check, cancel-in-progress: false }   # never two runs at once (would double the request rate)
+jobs:
+  live-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Sample Jupiter market-stats (stops on first non-200)
+        env: { MINUTES: '${{ inputs.minutes }}' }
+        run: |
+          mkdir -p out
+          CHUNKS=$(( MINUTES * 60 / 15 ))          # one chunk = one sample per market = ~15 s
+          echo "minutes=$MINUTES chunks=$CHUNKS"
+          for i in $(seq 1 "$CHUNKS"); do
+            if ! node scripts/live-check.mjs --samples 1 --interval 15 --out "out/chunk-$(printf '%03d' "$i").json"; then
+              echo "STOPPED at chunk $i (non-200, 429 or network error)"
+              echo "stopped_at_chunk=$i" > out/STOPPED.txt
+              break
+            fi
+          done
+      - name: Merge chunk reports
+        if: always()
+        run: |
+          node --input-type=module - <<'NODE'
+          import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+          const files = readdirSync('out').filter(f => /^chunk-\d+\.json$/.test(f)).sort();
+          const results = files.flatMap(f => JSON.parse(readFileSync('out/' + f, 'utf8')).results);
+          const hdrNames = [...new Set(results.flatMap(r => Object.keys(r.headers || {})))].sort();
+          const rlNames = hdrNames.filter(h => /rate|limit|retry|quota|remaining|reset/i.test(h));
+          const rlValues = Object.fromEntries(rlNames.map(h => [h, [...new Set(results.map(r => r.headers && r.headers[h]).filter(v => v !== undefined))].slice(0, 20)]));
+          const gaps = {};
+          for (const m of ['SOL', 'ETH', 'BTC']) {
+            const t = results.filter(r => r.market === m && r.at).map(r => Date.parse(r.at)); const g = [];
+            for (let i = 1; i < t.length; i++) g.push((t[i] - t[i - 1]) / 1000);
+            g.sort((a, b) => a - b); gaps[m] = g.length ? { n: g.length, minSec: g[0], medianSec: g[g.length >> 1], maxSec: g[g.length - 1] } : null;
+          }
+          const count = f => results.filter(f).length;
+          const verdict = {
+            requests: results.length, chunks: files.length,
+            firstAt: results[0]?.at ?? null, lastAt: results[results.length - 1]?.at ?? null,
+            stoppedEarly: existsSync('out/STOPPED.txt') ? readFileSync('out/STOPPED.txt', 'utf8').trim() : false,
+            http200: count(r => r.status === 200), http429: count(r => r.status === 429),
+            otherNon200: count(r => r.status !== undefined && r.status !== 200 && r.status !== 429), networkErrors: count(r => r.error),
+            statusCodes: [...new Set(results.map(r => r.status).filter(s => s !== undefined))],
+            perMarketIntervalSec: gaps,
+            rateLimitHeaderNames: rlNames, rateLimitHeaderValuesSeen: rlValues, retryAfterSeen: rlNames.includes('retry-after'), allHeaderNames: hdrNames,
+            priceTypes: [...new Set(results.map(r => r.priceType).filter(Boolean))],
+            timestampLikeKeysSeen: [...new Set(results.flatMap(r => r.timestampLikeKeys || []))],
+            note: 'Observations from one run from a GitHub-hosted runner (not Render egress). Not a guarantee of long-term rate-limit safety.'
+          };
+          writeFileSync('out/s2-live-check-merged.json', JSON.stringify({ when: new Date().toISOString(), verdict, results }, null, 2));
+          console.log(JSON.stringify(verdict, null, 2));
+          NODE
+      - name: Upload report (also on failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: s2-live-check-${{ github.run_id }}
+          path: out/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Fail the run if sampling stopped early
+        if: always()
+        run: |
+          if [ -f out/STOPPED.txt ]; then cat out/STOPPED.txt; exit 1; fi
