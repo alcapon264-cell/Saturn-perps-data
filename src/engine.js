@@ -1,6 +1,6 @@
 /* Candle runtime: keeps `forming` candles current, finalises closed buckets, and rebuilds from stored observations after a restart.
  * Candles are only ever a function of rows in perps_observations. Complete candles are immutable (enforced in SQL as well). */
-import { TFS, TF_SEC, bucketStartMs, bucketEndMs } from './time.js';
+import { TFS, bucketStartMs, bucketEndMs } from './time.js';
 import { buildCandle, ohlcOk, groupByBucket } from './candles.js';
 import { SOURCE } from './config.js';
 
@@ -38,16 +38,14 @@ export function createCandleEngine({ store, cfg, now = Date.now, metrics, onCand
     return n;
   }
 
-  /* Restart recovery: rebuild forming + never-written buckets from stored observations. Idempotent. */
+  /* Restart recovery: rebuild every retained observation bucket, including holes before newer completed candles.
+   * Complete candles remain immutable in the store; only missing and forming buckets can be written/refreshed. */
   async function recover(market) {
     const t = now(), floor = t - cfg.retention.observationsDays * 86400000;
-    const since = {};
-    for (const tf of TFS) { const last = await store.lastCompleteStartMs(market, tf); since[tf] = last == null ? floor : last + TF_SEC[tf] * 1000; }
-    const from = Math.max(floor, Math.min(...Object.values(since)));
-    const obs = await store.observations(market, from, t + 1);
+    const obs = await store.observations(market, floor, t + 1);
     let rebuilt = 0;
     for (const tf of TFS) {
-      for (const [s, arr] of groupByBucket(obs.filter(o => o.t >= since[tf]), tf)) {
+      for (const [s, arr] of groupByBucket(obs, tf)) {
         const k = buildCandle(arr, opts(s, tf, t));
         if (k && await write(market, k)) rebuilt++;
       }
