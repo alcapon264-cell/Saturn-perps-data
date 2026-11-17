@@ -17,7 +17,7 @@ Scope of this report: stage **S1 only**. Nothing is deployed, no paid Render res
 | 7 | Preserve missing intervals, never fabricate | **Done, VERIFIED.** A deleted block of observations yields absent candle rows; no filler candles; no `volume`. |
 | 8 | 80 % coverage + max-gap validation | **Done, VERIFIED** at exact boundaries (0.80 vs 0.79; gap limit vs limit+1). |
 | 9 | 20 % jump filter, 3 consecutive confirming samples | **Done, VERIFIED** (unit + end-to-end with real DB). |
-| 10 | 60 contiguous valid hourly candles before A.A.I.H. | **Done, VERIFIED** server-side (`/readiness`); the client must still re-validate. |
+| 10 | A.A.I.H. readiness dependency | **Removed from Saturn Perps** in the A.A.I.H. removal patch; it is no longer a startup or API dependency. |
 | 11 | Completely separate Perps WebSocket | **Done.** Path `/perps/live` on this service only; static test proves the `/live` spot path is not served. |
 | 12 | Trading/execution disabled | **BY DESIGN, VERIFIED statically.** No wallet, signing, order, position or write code exists; outbound traffic is one GET; no request bodies are read. |
 
@@ -35,9 +35,8 @@ Processes in the single service: recorder (per-market timers), candle engine (up
 - `GET /internal/status` (protected) → the detailed operational view that `/healthz` used to return: `{ok, service, version, epoch, serverTime, uptimeSec, source, ready, leader, db:{ok}, lastInitError, recorder:{running, intervalSec, dbDegraded, queued, rateHeaders, markets:{SOL:{state, lastObservationAt, ageMs, price, consecutiveFailures, consecutiveRejects, circuitOpen, suspectFlat, lastOutcome, lastHttpStatus, backoffMs, seq, jumpPending}}}, ws:{clients}, thresholds, metrics}`. Controls: **does not exist (404) unless the server env var `STATUS_TOKEN` is set** (≥ 24 printable characters); requires `Authorization: Bearer <token>` compared in constant time (401 otherwise); any request carrying an `Origin` header is refused (403) and no CORS headers are ever sent, so a web page cannot call it; 10 attempts/min per IP (429, correct tokens included, so brute force is throttled); GET only; `no-store`. The token is never logged or returned. It is meant for you / an uptime tool / Render's shell, not for the Saturn frontend.
 - `GET /v1/perps/markets` → `{ok, source, serverTime, markets:[{market, price, observedAt, ageMs, state}]}`; `state ∈ live|stale|down|no_data`; price is `null` when `down` or `no_data`.
 - `GET /v1/perps/candles?market&tf[&limit 1–500, default 200][&before unix][&includeForming=1]` → `{ok, market, tf, source, basis:"sampled", sampleIntervalSec, serverTime, candles:[{t, o, h, l, c, n, coverage, maxGapSec, status, valid}], meta:{firstObservationAt, validCount, returned}}`. Candles ascend by `t` (unix s, UTC); the newest `limit` are returned; no `v` field. Completed candles only unless `includeForming=1`. Invalid-but-complete candles are returned with `valid:false` (the consumer must filter).
-- `GET /v1/perps/readiness?market` → `{ok, serverTime, market, tf:"1h", required:60, validConsecutiveCandles, ready, reason, latestCandleAgeSec, earliestReadyAt, earliestReadyIsEstimate:true}`; `reason ∈ ready|insufficient_history|has_gaps|stale|recorder_down|no_data`.
 - Errors: `{ok:false, error}` with `bad_market|bad_tf|bad_limit|bad_before|not_found|method_not_allowed|origin_not_allowed|rate_limited|db_unavailable|shutting_down|server_error`.
-- Limits (per client IP, per route, 60 s window): 60 requests (`HTTP_LIMIT_PER_MIN`), readiness 10, healthz 120. Short in-process caches: markets 1 s, readiness 5 s, candles 2 s, with in-flight de-duplication.
+- Limits (per client IP, per route, 60 s window): 60 requests (`HTTP_LIMIT_PER_MIN`), healthz 120. Short in-process caches: markets 1 s, candles 2 s, with in-flight de-duplication.
 
 ### WebSocket `wss://<host>/perps/live`
 Client → server: `{type:"subscribe", markets:[…≤3], tfs:[…] (default ["1h"])}`, `{type:"unsubscribe", markets:[…]}`, `{type:"ping"}`.
@@ -62,7 +61,6 @@ Rules (all **VERIFIED**): a message is sent only for a NEW accepted observation 
 1. **Jump filter always applies** (the plan said "within 60 s"). After a long outage a >20 % move also needs 3 confirming samples (≈ 45 s of delay at most).
 2. **Only the 3rd confirming sample is stored.** The first two stay in `perps_rejects` as `jump_pending`, so those two slots are gaps (they are never back-filled, even though they were real prices).
 3. **Max-gap rule is `max(4 × interval, tf/6)`**, identical to the approved 60/60/150/600/2400 s at 15 s sampling, but it scales if the interval is changed (the plan's fixed 60 s floor would invalidate everything at 30 s).
-4. **Readiness reason `incomplete` was dropped** (a forming candle is never part of the window, so it cannot be the reason).
 5. Added: `RECORDER_ENABLED` switch (API-only instances), `epoch` in `perps_hello`, `perps_unsubscribed`, `persisted:false`, `suspectFlat`, `/healthz` 200-with-`ok:false` policy.
 6. Invalid-but-complete candles are returned by the API with `valid:false` rather than hidden, so a gap is visible to the UI.
 
@@ -105,3 +103,8 @@ Tests: 98/98 (was 92). Mutants: disabling the recorder range check, and dropping
 3. Behaviour from a server/datacenter origin (Render egress IPs may be shared); first check from the service container with `RECORDER_ENABLED=0` in S3 staging.
 4. Decision on whether a Jupiter API key is needed.
 Not claimed: production readiness, any live integration beyond the 12 browser requests. S3 not started.
+
+
+## Revision 4 — A.A.I.H. removed from Saturn Perps
+
+A.A.I.H. is no longer part of this service. The readiness module, configuration values, HTTP route, application wiring, and readiness-only tests have been removed. `/v1/perps/readiness` now returns `404 not_found`. The recorder, market endpoint, candle endpoint, sampled-data rules, 80% candle coverage threshold, maximum-gap validation, and execution-disabled defaults are unchanged. This change removes an analytics/readiness dependency; it does not certify trading safety or production readiness.
