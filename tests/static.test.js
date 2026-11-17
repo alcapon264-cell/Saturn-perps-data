@@ -39,7 +39,7 @@ test('HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bod
   for (const [f, t] of Object.entries(prod)) if (f !== 'src/gateway.js') assert.ok(!/req\.on\(['"]data/.test(t), f + ' reads a request body; only the gateway may');
   const g = prod['src/gateway.js']; assert.match(g, /if \(!G\.executionEnabled\)/, 'transaction routes are behind the execution switch'); assert.match(g, /G\.maxBody/);
   for (const [f, t] of Object.entries(prod)) { if (/live-check/.test(f)) continue; assert.ok(!/\beval\s*\(|new Function|child_process|require\(\s*[^'"]|import\(\s*[^'"]/.test(t) || f === 'server.js', f); }
-  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets', '/v1/perps/readiness']);
+  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets']);
 });
 
 test('secrets: no keys, tokens, URLs with credentials or private hosts hard-coded; .env is ignored', () => {

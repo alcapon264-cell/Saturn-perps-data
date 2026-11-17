@@ -1,4 +1,4 @@
-/* Real PostgreSQL (psql-driver test harness). Verifies the schema, constraints, store SQL, candle runtime and A.A.I.H. readiness. */
+/* Real PostgreSQL (psql-driver test harness). Verifies the schema, constraints, store SQL, candle runtime. */
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -6,7 +6,6 @@ import { createTestDb, clusterUp } from './helpers/pg-local.js';
 import { migrate } from '../src/db.js';
 import { createStore } from '../src/store.js';
 import { createCandleEngine } from '../src/engine.js';
-import { computeReadiness } from '../src/readiness.js';
 import { buildCandle } from '../src/candles.js';
 import { loadConfig, SOURCE } from '../src/config.js';
 import { TF_SEC } from '../src/time.js';
@@ -163,56 +162,6 @@ test('engine: onObservation keeps forming candles current; finalizeDue closes th
   assert.equal(fin.status, 'complete'); assert.equal(fin.c, 103); assert.ok(events.some(e => e[0] === '1m' && e[1] === 'complete'));
 });
 
-/* ---------------- A.A.I.H. readiness ---------------- */
-const ready = async (market, atMs, state = 'live') => { now = atMs; return computeReadiness({ store, cfg, market, now: clock, marketState: state }); };
-
-test('readiness: 60 contiguous valid hourly candles -> ready; 59 -> insufficient_history (with a labelled estimate)', { skip: skip() }, async () => {
-  await clean('SOL'); const start = T0 + 100 * HOUR;     /* hour-aligned start of recording */
-  await bulk('SOL', start, start + 61 * HOUR, { offsetSec: 0 });
-  const eng = createCandleEngine({ store, cfg, now: clock });
-  /* 59 full hours completed */
-  now = start + 59 * HOUR + 20000; await eng.recover('SOL');
-  let r = await ready('SOL', start + 59 * HOUR + 20000);
-  assert.equal(r.ready, false); assert.equal(r.reason, 'insufficient_history'); assert.equal(r.validConsecutiveCandles, 59);
-  assert.equal(r.earliestReadyIsEstimate, true); assert.equal(r.earliestReadyAt, (start + 60 * HOUR + 15000) / 1000);
-  /* 60 full hours */
-  now = start + 60 * HOUR + 20000; await eng.recover('SOL'); await eng.finalizeDue('SOL');
-  r = await ready('SOL', start + 60 * HOUR + 20000);
-  assert.equal(r.ready, true, JSON.stringify(r)); assert.equal(r.reason, 'ready'); assert.equal(r.validConsecutiveCandles, 60); assert.ok(r.latestCandleAgeSec <= 3600 + 60);
-  /* 1 s before the grace elapsed the newest bucket is not yet required, so it must not flicker to not-ready */
-  r = await ready('SOL', start + 60 * HOUR + 5000); assert.equal(r.ready, false, 'window not complete yet');
-});
-
-test('readiness: one missing hour inside the window blocks readiness until it ages out', { skip: skip() }, async () => {
-  const start = T0 + 100 * HOUR, hole = start + 30 * HOUR;
-  await db.sql(`DELETE FROM perps_observations WHERE market='SOL' AND observed_at >= to_timestamp(${hole / 1000}) AND observed_at < to_timestamp(${(hole + HOUR) / 1000})`);
-  await db.sql(`DELETE FROM perps_candles WHERE market='SOL' AND tf='1h' AND bucket_start = to_timestamp(${hole / 1000})`);
-  let r = await ready('SOL', start + 60 * HOUR + 20000);
-  assert.equal(r.ready, false); assert.equal(r.reason, 'has_gaps'); assert.equal(r.validConsecutiveCandles, 29);
-  assert.equal(r.earliestReadyAt, (hole + 61 * HOUR + 15000) / 1000);
-  /* an invalid-but-present hour also blocks */
-  await db.sql(`UPDATE perps_candles SET valid=false WHERE market='SOL' AND tf='1h' AND bucket_start = to_timestamp(${(start + 10 * HOUR) / 1000})`);
-  r = await ready('SOL', start + 60 * HOUR + 20000); assert.equal(r.ready, false);
-});
-
-test('readiness: stale newest candle, recorder_down, no_data', { skip: skip() }, async () => {
-  await clean('ETH'); const start = T0 + 200 * HOUR; await bulk('ETH', start, start + 62 * HOUR, { offsetSec: 0 });
-  const eng = createCandleEngine({ store, cfg, now: clock }); now = start + 62 * HOUR + 20000; await eng.recover('ETH'); await eng.finalizeDue('ETH');
-  let r = await ready('ETH', start + 62 * HOUR + 20000); assert.equal(r.ready, true, JSON.stringify(r));
-  r = await ready('ETH', start + 62 * HOUR + 20000, 'down'); assert.equal(r.ready, false); assert.equal(r.reason, 'recorder_down');
-  r = await ready('ETH', start + 62 * HOUR + 3 * HOUR); assert.equal(r.ready, false); assert.ok(['stale', 'has_gaps'].includes(r.reason), r.reason);
-  const empty = await createTestDb(); try { await migrate(empty, MIG); const s2 = createStore(empty); await s2.ensureMarkets();
-    const e = await computeReadiness({ store: s2, cfg, market: 'SOL', now: () => T0, marketState: 'no_data' }); assert.equal(e.ready, false); assert.equal(e.reason, 'no_data'); assert.equal(e.validConsecutiveCandles, 0);
-  } finally { await empty.drop(); }
-});
-
-test('readiness: 59 valid + 1 invalid is NOT ready (59/60 is not ready)', { skip: skip() }, async () => {
-  await clean('BTC'); const start = T0 + 300 * HOUR; await bulk('BTC', start, start + 61 * HOUR, { offsetSec: 0 });
-  const eng = createCandleEngine({ store, cfg, now: clock }); now = start + 61 * HOUR + 20000; await eng.recover('BTC'); await eng.finalizeDue('BTC');
-  let r = await ready('BTC', start + 60 * HOUR + 20000); assert.equal(r.ready, true, JSON.stringify(r));
-  await db.sql(`UPDATE perps_candles SET valid=false WHERE market='BTC' AND tf='1h' AND bucket_start = to_timestamp(${(start + 59 * HOUR) / 1000})`);
-  r = await ready('BTC', start + 60 * HOUR + 20000); assert.equal(r.ready, false); assert.equal(r.validConsecutiveCandles, 0);
-});
 
 test('leader lock: second session cannot take it; released/killed lock can be re-acquired', { skip: skip() }, async () => {
   const d1 = await createTestDb({ name: db.dbName + '_l' }); try {

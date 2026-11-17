@@ -92,29 +92,16 @@ test('candles: parameter validation matrix (fuzz)', opts, async () => {
       ['/v1/perps/candles?market=SOL', 'bad_tf'], ['/v1/perps/candles?market=SOL&tf=2h', 'bad_tf'], ['/v1/perps/candles?market=SOL&tf=1H', 'bad_tf'], ['/v1/perps/candles?market=SOL&tf=constructor', 'bad_tf'], ["/v1/perps/candles?market=SOL&tf=1h';DROP%20TABLE%20x", 'bad_tf'],
       ['/v1/perps/candles?market=SOL&tf=1h&limit=0', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=501', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=-1', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=1e3', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=abc', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=99999999999', 'bad_limit'],
       ['/v1/perps/candles?market=SOL&tf=1h&before=-1', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=abc', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=1e9', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=9999999999999', 'bad_before'],
-      ['/v1/perps/readiness', 'bad_market'], ['/v1/perps/readiness?market=XRP', 'bad_market']
     ];
     for (const [p, code] of bad) { const r = await json(await e.get(p)); assert.equal(r.status, 400, p); assert.equal(r.body.error, code, p); assert.equal(r.body.ok, false); assert.ok(!/stack|at \w+\.|node:|\.js:\d+/.test(JSON.stringify(r.body)), 'no internals'); }
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=500')).status, 200); assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=1')).status, 200);
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&includeForming=yes')).status, 200, 'unknown flag values are ignored, not echoed');
+    assert.equal((await e.get('/v1/perps/readiness?market=SOL')).status, 404, 'A.A.I.H. readiness API has been removed');
     assert.equal((await e.get('/nope')).status, 404); assert.equal((await e.get('/v1/perps/orders')).status, 404); assert.equal((await e.get('/v1/perps/candles/../../etc/passwd')).status, 404);
     const tables = await e.db.rows("SELECT count(*)::int n FROM information_schema.tables WHERE table_name LIKE 'perps_%'"); assert.equal(tables[0].n, 8, 'no table was dropped (7 data tables + perps_exec_requests from migration 002)');
   } finally { await e.drop(); }
 });
 
-test('readiness endpoint: not ready -> ready; labelled estimate; shape', opts, async () => {
-  const e = await boot(); try {
-    await seedHistory(e, 'SOL', START, START + 30 * HOUR);
-    let r = await json(await e.get('/v1/perps/readiness?market=SOL')); assert.equal(r.status, 200);
-    assert.equal(r.body.ready, false); assert.equal(r.body.reason, 'insufficient_history'); assert.equal(r.body.required, 60); assert.equal(r.body.tf, '1h'); assert.equal(r.body.earliestReadyIsEstimate, true);
-    assert.equal(r.body.validConsecutiveCandles, 30);
-    const e2 = await boot(); try {
-      await seedHistory(e2, 'SOL', START, START + 61 * HOUR);
-      const ok = await json(await e2.get('/v1/perps/readiness?market=SOL')); assert.equal(ok.body.ready, true, JSON.stringify(ok.body)); assert.equal(ok.body.reason, 'ready'); assert.equal(ok.body.validConsecutiveCandles, 60);
-      const none = await json(await e2.get('/v1/perps/readiness?market=ETH')); assert.equal(none.body.ready, false); assert.equal(none.body.reason, 'no_data');
-    } finally { await e2.drop(); }
-  } finally { await e.drop(); }
-});
 
 test('CORS: allowed origin, foreign origin, no origin, preflight; write methods refused', opts, async () => {
   const e = await boot(); try {
@@ -136,14 +123,13 @@ test('CORS is fail-closed when ALLOWED_ORIGINS is empty', opts, async () => {
 });
 
 test('rate limit: per-IP window; spoofed first x-forwarded-for entry cannot dodge it; limits are per route', opts, async () => {
-  const e = await boot({ env: { HTTP_LIMIT_PER_MIN: '5', READINESS_LIMIT_PER_MIN: '2' } }); try {
+  const e = await boot({ env: { HTTP_LIMIT_PER_MIN: '5' } }); try {
     const hit = (xff, p = '/v1/perps/markets') => e.get(p, { 'x-forwarded-for': xff });
     for (let i = 0; i < 5; i++) assert.equal((await hit(`spoof${i}.0.0.1, 9.9.9.9`)).status, 200, 'varying the client-controlled first entry does not create new buckets');
     const r = await hit('1.2.3.4, 9.9.9.9'); assert.equal(r.status, 429); assert.equal(r.headers.get('retry-after'), '30'); assert.equal((await r.json()).error, 'rate_limited');
     assert.equal((await hit('1.2.3.4, 8.8.8.8')).status, 200, 'a different real client (last entry) has its own budget');
     assert.equal((await hit('x, 9.9.9.9', '/v1/perps/candles?market=SOL&tf=1h')).status, 200, 'separate budget per route');
-    assert.equal((await hit('x, 7.7.7.7', '/v1/perps/readiness?market=SOL')).status, 200); assert.equal((await hit('x, 7.7.7.7', '/v1/perps/readiness?market=SOL')).status, 200); assert.equal((await hit('x, 7.7.7.7', '/v1/perps/readiness?market=SOL')).status, 429);
-    assert.ok(e.parts.metrics.get('http_rate_limited') >= 2);
+    assert.ok(e.parts.metrics.get('http_rate_limited') >= 1);
   } finally { await e.drop(); }
 });
 
@@ -153,7 +139,6 @@ test('database outage: 503 db_unavailable on data routes, health stays 200 with 
     e.db.fail = true;
     let r = await json(await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=3')); assert.equal(r.status, 503); assert.equal(r.body.error, 'db_unavailable');
     r = await json(await e.get('/v1/perps/markets')); assert.equal(r.status, 503);
-    r = await json(await e.get('/v1/perps/readiness?market=SOL')); assert.equal(r.status, 503);
     r = await json(await e.get('/healthz')); assert.equal(r.status, 200); assert.deepEqual(r.body, { ok: false, service: 'saturn-perps-data', ready: true }, 'minimal body even during an outage');
     const st = await json(await e.get('/internal/status', { authorization: 'Bearer status-token-0123456789-abcdefghij' })); assert.equal(st.status, 200); assert.equal(st.body.db.ok, false); assert.equal(st.body.ok, false);
     e.db.fail = false; await new Promise(r => setTimeout(r, 2100));
