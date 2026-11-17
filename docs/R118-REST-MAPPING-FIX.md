@@ -29,3 +29,4 @@ This patch corrects only the request-field mapping sent from Saturn's gateway to
 - `node --test tests/static.test.js tests/unit.test.js`: 28/28 passed.
 - Full `npm test` could not complete in this environment: PostgreSQL is unavailable and the `ws` dependency is not installed. An attempted dependency install timed out. The gateway integration tests therefore remain unverified in this environment.
 - No live Jupiter transaction was requested, signed, submitted, or executed. No Render service or environment variable was changed.
+\n## Follow-up verification note (R119)\n\nThe Borsh argument layout, Side enum values, and Position / PositionRequest PDA seed ordering are now cross-checked against the published Jupiter Perpetuals IDL and PDA examples. See `R119-IDL-PDA-VERIFICATION.md`. Live transaction-response and keeper-signature behavior remain unverified, so execution stays locked.\n
