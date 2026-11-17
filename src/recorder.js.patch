@@ -1,0 +1,12 @@
+--- a/src/recorder.js
++++ b/src/recorder.js
+@@
+-          /* Never bypass an older queued observation, even when its flush attempt fails. */
+-          if (queue.length >= QUEUE_MAX) { queue.shift(); metrics?.inc('queue_overflow_dropped'); }
++          /* Preserve every older queued observation; reject the newest when the bounded queue is full. */
++          if (queue.length >= QUEUE_MAX) { metrics?.inc('queue_overflow_dropped'); return; }
+@@
+-        if (queue.length >= QUEUE_MAX) { queue.shift(); metrics?.inc('queue_overflow_dropped'); }
+-        queue.push(obs); inserted = true;
++        if (queue.length >= QUEUE_MAX) { metrics?.inc('queue_overflow_dropped'); return; }
++        queue.push(obs); inserted = true;
