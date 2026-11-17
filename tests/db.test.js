@@ -162,7 +162,6 @@ test('engine: onObservation keeps forming candles current; finalizeDue closes th
   assert.equal(fin.status, 'complete'); assert.equal(fin.c, 103); assert.ok(events.some(e => e[0] === '1m' && e[1] === 'complete'));
 });
 
-
 test('leader lock: second session cannot take it; released/killed lock can be re-acquired', { skip: skip() }, async () => {
   const d1 = await createTestDb({ name: db.dbName + '_l' }); try {
     assert.equal(await d1.tryLeaderLock(), true);

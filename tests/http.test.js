@@ -91,17 +91,31 @@ test('candles: parameter validation matrix (fuzz)', opts, async () => {
       ['/v1/perps/candles?market=SOL%00&tf=1h', 'bad_market'], ['/v1/perps/candles?market=__proto__&tf=1h', 'bad_market'], ['/v1/perps/candles?market=' + 'A'.repeat(5000) + '&tf=1h', 'bad_market'],
       ['/v1/perps/candles?market=SOL', 'bad_tf'], ['/v1/perps/candles?market=SOL&tf=2h', 'bad_tf'], ['/v1/perps/candles?market=SOL&tf=1H', 'bad_tf'], ['/v1/perps/candles?market=SOL&tf=constructor', 'bad_tf'], ["/v1/perps/candles?market=SOL&tf=1h';DROP%20TABLE%20x", 'bad_tf'],
       ['/v1/perps/candles?market=SOL&tf=1h&limit=0', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=501', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=-1', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=1e3', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=abc', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=', 'bad_limit'], ['/v1/perps/candles?market=SOL&tf=1h&limit=99999999999', 'bad_limit'],
-      ['/v1/perps/candles?market=SOL&tf=1h&before=-1', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=abc', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=1e9', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=9999999999999', 'bad_before'],
+      ['/v1/perps/candles?market=SOL&tf=1h&before=-1', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=abc', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=1e9', 'bad_before'], ['/v1/perps/candles?market=SOL&tf=1h&before=9999999999999', 'bad_before']
     ];
     for (const [p, code] of bad) { const r = await json(await e.get(p)); assert.equal(r.status, 400, p); assert.equal(r.body.error, code, p); assert.equal(r.body.ok, false); assert.ok(!/stack|at \w+\.|node:|\.js:\d+/.test(JSON.stringify(r.body)), 'no internals'); }
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=500')).status, 200); assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=1')).status, 200);
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&includeForming=yes')).status, 200, 'unknown flag values are ignored, not echoed');
-    assert.equal((await e.get('/v1/perps/readiness?market=SOL')).status, 404, 'A.A.I.H. readiness API has been removed');
     assert.equal((await e.get('/nope')).status, 404); assert.equal((await e.get('/v1/perps/orders')).status, 404); assert.equal((await e.get('/v1/perps/candles/../../etc/passwd')).status, 404);
     const tables = await e.db.rows("SELECT count(*)::int n FROM information_schema.tables WHERE table_name LIKE 'perps_%'"); assert.equal(tables[0].n, 8, 'no table was dropped (7 data tables + perps_exec_requests from migration 002)');
   } finally { await e.drop(); }
 });
 
+test('r118: A.A.I.H. readiness route is gone (404); markets carry symbol, mint, executable, honest 24h stats and null volume/OI', opts, async () => {
+  const e = await boot(); try {
+    assert.equal((await e.get('/v1/perps/readiness?market=SOL')).status, 404, 'removed with A.A.I.H.');
+    let r = await json(await e.get('/v1/perps/markets')); assert.equal(r.status, 200);
+    const sol = r.body.markets.find(m => m.market === 'SOL');
+    assert.equal(sol.symbol, 'SOL-PERP'); assert.equal(sol.executable, true); assert.match(sol.mint, /^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+    assert.equal(sol.stats24h, null, 'no 24 h statistics without 20+ recorded hours'); assert.equal(sol.volume24h, null); assert.equal(sol.openInterest, null);
+    const e2 = await boot(); try {
+      await seedHistory(e2, 'SOL', START, START + 30 * HOUR);
+      const r2 = await json(await e2.get('/v1/perps/markets')); const s2 = r2.body.markets.find(m => m.market === 'SOL').stats24h;
+      assert.ok(s2 && s2.hours >= 20 && s2.high >= s2.low && s2.open > 0 && typeof s2.changePct === 'number', JSON.stringify(s2)); assert.equal(s2.basis, 'saturn_sampled_1h');
+      const eth = r2.body.markets.find(m => m.market === 'ETH'); assert.equal(eth.stats24h, null, 'ETH never gets SOL statistics');
+    } finally { await e2.drop(); }
+  } finally { await e.drop(); }
+});
 
 test('CORS: allowed origin, foreign origin, no origin, preflight; write methods refused', opts, async () => {
   const e = await boot(); try {
@@ -159,7 +173,7 @@ test('responses never contain more than the documented fields (no raw upstream p
   const e = await boot(); try {
     await seedHistory(e, 'SOL', START, START + 3 * HOUR);
     const m = await json(await e.get('/v1/perps/markets'));
-    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), ['ageMs', 'market', 'observedAt', 'price', 'state']);
+    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), ['ageMs', 'executable', 'market', 'mint', 'observedAt', 'openInterest', 'price', 'state', 'stats24h', 'symbol', 'volume24h']);   /* r118 fields */
     assert.ok(!JSON.stringify(m.body).includes('priceChange24H'));
   } finally { await e.drop(); }
 });
