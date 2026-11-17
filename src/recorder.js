@@ -83,7 +83,11 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
       try {
         if (queue.length) {
           /* Never bypass an older queued observation, even when its flush attempt fails. */
-          if (queue.length >= QUEUE_MAX) { queue.shift(); metrics?.inc('queue_overflow_dropped'); }
+          if (queue.length >= QUEUE_MAX) {
+            /* Preserve the existing FIFO backlog; reject this newest sample instead of evicting an older one. */
+            metrics?.inc('queue_overflow_dropped');
+            return;
+          }
           queue.push(obs);
           const flushed = await flushQueue();
           persisted = flushed && !queue.includes(obs);
@@ -94,7 +98,11 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
         }
       } catch (e) {
         persisted = false; dbDegraded = true; metrics?.inc('db_write_errors');
-        if (queue.length >= QUEUE_MAX) { queue.shift(); metrics?.inc('queue_overflow_dropped'); }
+        if (queue.length >= QUEUE_MAX) {
+          /* Do not evict the oldest queued observation to make room for a newer one. */
+          metrics?.inc('queue_overflow_dropped');
+          return;
+        }
         queue.push(obs); inserted = true;
       }
       if (!inserted) { metrics?.inc('duplicate_slot'); return; }
