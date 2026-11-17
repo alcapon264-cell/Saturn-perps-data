@@ -1,12 +1,13 @@
 /* Wiring. Everything environment-specific is injected so the whole service runs offline in tests. */
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { MARKET_KEYS, SOURCE } from './config.js';
+import { MARKET_KEYS, MARKETS, SOURCE } from './config.js';
 import { createMetrics } from './metrics.js';
 import { createLimiter, clientIp } from './limits.js';
 import { createStore } from './store.js';
 import { createJupiterClient, createJupiterGateway } from './jupiter.js';
 import { createGateway } from './gateway.js';
+import { CUSTODY } from './perps-program.js';
 import { createCandleEngine } from './engine.js';
 import { createRecorder } from './recorder.js';
 import { createHttpHandler } from './http.js';
@@ -38,7 +39,28 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     const ageMs = Math.max(0, now() - last.t), state = stateFromAge(ageMs);
     return { market: m, price: state === 'down' ? null : last.price, observedAt: Math.floor(last.t / 1000), ageMs, state };
   }
-  const marketsView = async () => Promise.all(MARKET_KEYS.map(marketView));
+  /* r118: real 24 h statistics from this service's OWN recorded hourly candles (complete AND valid, plus the forming hour).
+   * Returned only when at least 20 of the last 24 hours are covered; otherwise null. Nothing is estimated or filled.
+   * Volume and open interest are NOT recorded by this service, so they are always null (never invented). */
+  const statsCache = new Map();
+  async function stats24h(m) {
+    const c = statsCache.get(m); if (c && now() - c.at < 60000) return c.v;
+    let v = null;
+    try {
+      const rows = await readStore.candles(m, '1h', { limit: 25, includeForming: true });
+      const from = Math.floor(now() / 1000) - 24 * 3600;
+      const win = rows.filter(k => k.t >= from - 3600 && (k.status === 'forming' || k.valid));
+      if (win.length >= 20) {
+        const open = win[0].o, last = win[win.length - 1].c;
+        let high = -Infinity, low = Infinity; for (const k of win) { if (k.h > high) high = k.h; if (k.l < low) low = k.l; }
+        if (open > 0 && Number.isFinite(high) && Number.isFinite(low)) v = { open, high, low, last, changePct: +((last - open) / open * 100).toFixed(4), hours: win.length, from: win[0].t, basis: 'saturn_sampled_1h' };
+      }
+    } catch { v = null; }
+    statsCache.set(m, { at: now(), v }); return v;
+  }
+  /* r118: the market list is the single source of truth for the app: every market configured here appears automatically.
+   * executable = a Jupiter Perps custody account exists for it (perps-program.js CUSTODY); otherwise it is view-only. */
+  const marketsView = async () => Promise.all(MARKET_KEYS.map(async m => ({ ...(await marketView(m)), symbol: m + '-PERP', mint: MARKETS[m], executable: !!CUSTODY[m], stats24h: await stats24h(m), volume24h: null, openInterest: null })));
 
   const limiter = createLimiter({ now });
   /* Perps gateway: positions via Jupiter, live price from this service's own recorder, execution routes off unless explicitly enabled. Writes (idempotency rows) use the primary role. */

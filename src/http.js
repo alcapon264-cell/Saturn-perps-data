@@ -58,7 +58,8 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       const isRead = path === '/v1/perps/markets' || path === '/v1/perps/candles';
       if (!isRead) return err(res, 404, 'not_found', cors);
       if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
-      if (limiter(ip + '|' + path, cfg.http.ipLimitPerMin)) { metrics?.inc('http_rate_limited'); return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '30' }); }
+      const max = cfg.http.ipLimitPerMin;
+      if (limiter(ip + '|' + path, max)) { metrics?.inc('http_rate_limited'); return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '30' }); }
 
       if (path === '/v1/perps/markets') {
         const v = await cached('markets', 1000, getMarketsView);
@@ -67,7 +68,6 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
 
       const market = String(q.get('market') || '').toUpperCase();
       if (!MARKET_KEYS.includes(market)) return err(res, 400, 'bad_market', cors);
-
 
       /* /v1/perps/candles */
       const tf = q.get('tf');

@@ -78,8 +78,8 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
     const p = (async () => {
       if (!budget()) { metrics?.inc('gw_budget_exhausted'); return [503, { ok: false, error: 'upstream_busy', message: 'The Perps service is busy. Try again shortly.' }, { 'retry-after': '10' }]; }
       const r = await upstream.positions(w); metrics?.inc('gw_upstream_positions');
-      if (!r.ok) return [r.outcome === 'http' && r.status < 500 ? 502 : 504, { ok: false, error: 'upstream_' + r.outcome, message: 'Jupiter did not return positions.' }];
-      const v = sanitizePositions(r.json); if (!v) return [502, { ok: false, error: 'upstream_malformed', message: 'Jupiter returned positions in an unexpected shape.' }];
+      if (!r.ok) return [r.outcome === 'http' && r.status < 500 ? 502 : 504, { ok: false, error: 'upstream_' + r.outcome, message: 'The positions service did not respond.' }];
+      const v = sanitizePositions(r.json); if (!v) return [502, { ok: false, error: 'upstream_malformed', message: 'Positions came back in an unexpected shape.' }];
       posCache.set(w, { at: now(), v }); if (posCache.size > 2000) posCache.delete(posCache.keys().next().value);
       return [200, v];
     })().finally(() => inflight.delete(w));
@@ -95,14 +95,14 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
 
   /* ---- transactions ---- */
   function checkBuilt(r, { kind, wallet, position, expect }) {
-    if (!r.ok) return { err: [r.outcome === 'http' && r.status < 500 ? 502 : 504, { ok: false, error: 'upstream_' + r.outcome, message: clean(r.json && (r.json.message || r.json.error)) || 'Jupiter could not build this transaction.' }] };
+    if (!r.ok) return { err: [r.outcome === 'http' && r.status < 500 ? 502 : 504, { ok: false, error: 'upstream_' + r.outcome, message: clean(r.json && (r.json.message || r.json.error)) || 'The transaction could not be prepared.' }] };
     const j = r.json; let t;
     try { if (typeof j.serializedTxBase64 !== 'string' || j.serializedTxBase64.length > 4096) throw 0; t = parseTx(b64ToBytes(j.serializedTxBase64)); } catch { return { err: [502, { ok: false, error: 'upstream_tx_unreadable' }] }; }
     const w = wallet || t.keys[0];
     const ins = inspectPerpsTx(t, { wallet: w, kind });
-    if (!ins.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ins.why, message: 'Saturn refused the transaction Jupiter built (' + ins.why + '). Nothing was signed.' }] }; }
+    if (!ins.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ins.why, message: 'Saturn refused the prepared transaction (' + ins.why + '). Nothing was signed.' }] }; }
     if (position && ins.position !== position) return { err: [502, { ok: false, error: 'tx_refused', reason: 'position_mismatch' }] };
-    if (expect) { const ck = checkAgainstRequest(ins, { kind, wallet: w, expect }, b58decode, b58encode); if (!ck.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ck.why, message: 'Saturn refused the transaction Jupiter built (' + ck.why + '). Nothing was signed.' }] }; } }
+    if (expect) { const ck = checkAgainstRequest(ins, { kind, wallet: w, expect }, b58decode, b58encode); if (!ck.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ck.why, message: 'Saturn refused the prepared transaction (' + ck.why + '). Nothing was signed.' }] }; } }
     if (kind === 'increase' && (typeof j.positionPubkey !== 'string' || j.positionPubkey !== ins.position)) return { err: [502, { ok: false, error: 'tx_refused', reason: 'position_mismatch' }] };
     if (t.sigs[0].some(x => x !== 0)) return { err: [502, { ok: false, error: 'tx_refused', reason: 'already_signed' }] };
     const quote = {}; if (j.quote && typeof j.quote === 'object') { let n = 0; for (const [k, v] of Object.entries(j.quote)) { if (++n > 40) break; if (/^[A-Za-z0-9]{1,40}$/.test(k) && scalar(v)) quote[k] = v; } }
@@ -117,8 +117,8 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
       || typeof b.maxSlippageBps !== 'string' || !/^\d{2,3}$/.test(b.maxSlippageBps) || !(slip >= 10 && slip <= 500) || !isPubkey(b.walletAddress)) return [400, { ok: false, error: 'bad_request' }];
     if (limiter(ip + '|gw-prep', G.preparePerMinIp) || limiter('w:' + b.walletAddress + '|gw-prep', G.preparePerMinWallet)) return [429, { ok: false, error: 'rate_limited', message: 'Too many requests. Wait a moment and try again.' }, { 'retry-after': '30' }];
     if (!budget()) return [503, { ok: false, error: 'upstream_busy' }];
-    /* Forward only the documented Jupiter increase request fields. */
-    const r = await upstream.increase(mapIncrease(b));
+    /* r117: Saturn's request is MAPPED to Jupiter's field names (perps-program.js mapIncrease); Saturn-internal names are never forwarded */
+    const r = await upstream.increase(mapIncrease(b, { transactionType: G.transactionType }));
     const c = checkBuilt(r, { kind: 'increase', wallet: b.walletAddress, expect: { market: b.asset, side: b.side, inputMint: MINT[b.inputToken], collateralTokenDelta: b.inputTokenAmount } }); return c.err || [200, c.ok];
   }
   async function decrease(b, ip) {
@@ -160,15 +160,15 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
     if (r.ok) {
       const same = r.json && r.json.txid === sig;
       await store.settleExec(sig, same ? 'submitted' : 'unknown', r.status).catch(() => {});
-      return same ? [200, { ok: true, state: 'submitted', txid: sig }] : [202, { ok: false, state: 'unknown', txid: sig, message: 'Jupiter answered without this transaction id. Check the chain before doing anything else.' }];
+      return same ? [200, { ok: true, state: 'submitted', txid: sig }] : [202, { ok: false, state: 'unknown', txid: sig, message: 'The venue answered without this transaction id. Check the chain before doing anything else.' }];
     }
     if (r.outcome === 'http' && r.status >= 400 && r.status < 500) {
       await store.settleExec(sig, 'rejected', r.status).catch(() => {});
-      return [422, { ok: false, state: 'rejected', txid: sig, error: 'upstream_rejected', message: clean(r.json && (r.json.message || r.json.error)) || 'Jupiter rejected the transaction.' }];
+      return [422, { ok: false, state: 'rejected', txid: sig, error: 'upstream_rejected', message: clean(r.json && (r.json.message || r.json.error)) || 'The trade was rejected.' }];
     }
     await store.settleExec(sig, 'unknown', r.status || null).catch(() => {});   /* timeout / network / 5xx / malformed 2xx: AMBIGUOUS, never retried */
     metrics?.inc('gw_exec_unknown');
-    return [202, { ok: false, state: 'unknown', txid: sig, message: 'Jupiter did not confirm receipt. The transaction may or may not have been sent. Saturn will not resend it; check the chain.' }];
+    return [202, { ok: false, state: 'unknown', txid: sig, message: 'The venue did not confirm receipt. The transaction may or may not have been sent. Saturn will not resend it; check the chain.' }];
   }
 
   const ROUTES = { '/v1/perps/jup/positions': 'GET', '/v1/perps/jup/market-stats': 'GET', '/v1/perps/jup/positions/increase': 'POST', '/v1/perps/jup/positions/decrease': 'POST', '/v1/perps/jup/execute': 'POST' };
@@ -179,7 +179,7 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
       const m = ROUTES[path]; if (!m) return [404, { ok: false, error: 'not_found' }];
       if (req.method !== m) return [405, { ok: false, error: 'method_not_allowed' }];
       if (m === 'GET') return path.endsWith('/positions') ? positions(q, ip) : marketStats(q);
-      if (!G.executionEnabled) { metrics?.inc('gw_exec_disabled'); return G.executionRequested ? [403, { ok: false, error: 'execution_contract_unverified', message: 'Perps execution is locked: the Jupiter execution contract is not verified.', blockers: CONTRACT_BLOCKERS }] : [403, { ok: false, error: 'execution_disabled', message: 'Perps execution is disabled on this service.' }]; }
+      if (!G.executionEnabled) { metrics?.inc('gw_exec_disabled'); return G.executionRequested ? [403, { ok: false, error: 'execution_contract_unverified', message: 'Perps execution is locked: the execution contract is not verified.', blockers: CONTRACT_BLOCKERS }] : [403, { ok: false, error: 'execution_disabled', message: 'Perps execution is disabled on this service.' }]; }
       if ([...q.keys()].length) return [400, { ok: false, error: 'bad_request' }];
       let b; try { b = await readBody(req); } catch (e) { return [e.code || 400, { ok: false, error: e.message }]; }
       if (path.endsWith('/increase')) return increase(b, ip);

@@ -66,15 +66,6 @@ export function createStore(db) {
       const r = await db.query("SELECT count(*) AS k FROM perps_candles WHERE source=$1 AND market=$2 AND tf=$3 AND status='complete' AND valid", [SOURCE, market, tf]);
       return Number(r.rows[0].k);
     },
-    /* complete candles with bucket_start in [fromMs, toMs], returned ascending */
-    async completeRange(market, tf, fromMs, toMs) {
-      const r = await db.query("SELECT extract(epoch from bucket_start)*1000 AS s, valid FROM perps_candles WHERE source=$1 AND market=$2 AND tf=$3 AND status='complete' AND bucket_start >= to_timestamp($4) AND bucket_start <= to_timestamp($5) ORDER BY bucket_start ASC", [SOURCE, market, tf, ts(fromMs), ts(toMs)]);
-      return r.rows.map(x => ({ startMs: Math.round(n(x.s)), valid: !!x.valid }));
-    },
-    async newestComplete(market, tf) {
-      const r = await db.query("SELECT extract(epoch from bucket_start)*1000 AS s FROM perps_candles WHERE source=$1 AND market=$2 AND tf=$3 AND status='complete' ORDER BY bucket_start DESC LIMIT 1", [SOURCE, market, tf]);
-      return r.rows[0] ? Math.round(n(r.rows[0].s)) : null;
-    },
     async getMeta(key) { const r = await db.query('SELECT value FROM perps_meta WHERE key=$1', [key]); return r.rows[0] ? r.rows[0].value : null; },
     async setMeta(key, value) { await db.query('INSERT INTO perps_meta(key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()', [key, String(value)]); },
     /* batched deletes so retention never holds long locks */
