@@ -4,10 +4,13 @@
  *   - program id: the Pool Account page links the program IDL on Solscan at PERPHjGBqRHArX4DySjwM6UJHiR3sWAatqfdBS2qQJu (also listed by Helius' program catalog)
  *   - JLP pool 5BUwFW4nRbftYTDMbgxykoFWqWHPzahFSNAaaaJtVKsq (Pool Account page)
  *   - custody accounts SOL/ETH/BTC/USDC/USDT (Custody Account page)
- *   - account roles of create_increase_position_market_request / create_decrease_position_market_request (Helius parsed IDL)
- * COMPUTED (Anchor rule, not remembered): instruction discriminators = sha256("global:<snake_case_name>")[0..8].
- * NOT VERIFIED in this build: the Borsh argument layout of the two instructions (the IDL file could not be fetched). It is used only by the
- * frontend decoder, which therefore keeps execution DISABLED. The gateway below checks structure only (programs, signer, discriminator, accounts). */
+ *   - account roles and Borsh argument layouts of create_increase_position_market_request / create_decrease_position_market_request
+ *     (published Jupiter Perps Anchor IDL)
+ *   - Side enum order None=0, Long=1, Short=2; Position and PositionRequest PDA seed ordering/width
+ *     (published Jupiter Perps PDA examples)
+ * COMPUTED (Anchor rule): instruction discriminators = sha256("global:<snake_case_name>")[0..8].
+ * NOT VERIFIED: live Jupiter-built transaction response semantics, keeper-signature requirements, and real API-built transaction fixtures.
+ * Execution therefore remains DISABLED. The gateway performs structural and request-bound transaction checks only. */
 import { createHash } from 'node:crypto';
 
 export const PERPS_PROGRAM = 'PERPHjGBqRHArX4DySjwM6UJHiR3sWAatqfdBS2qQJu';
@@ -100,9 +103,9 @@ export function checkAgainstRequest(ins, { kind, wallet, expect }, b58decode, b5
  * PDA seeds, or transaction response semantics below. Execution therefore stays locked. */
 export const EXECUTE_CONTRACT_VERIFIED = false;
 export const CONTRACT_BLOCKERS = Object.freeze([
-  'The Borsh argument layout and Side encoding of the market-request instructions, and the Position / PositionRequest PDA seeds, are not verified against the official IDL.',
-  'The live increase/decrease transaction response and keeper-signature requirements have not been verified against Jupiter.',
-  'No safe live test against Jupiter\'s API has been performed.'
+  'Live Jupiter increase/decrease transaction response semantics and keeper-signature requirements have not been verified.',
+  'No real Jupiter-built transaction fixture has been captured and validated for the supported market/collateral combinations.',
+  'No end-to-end test has been performed against Jupiter; execution must remain disabled.'
 ]);
 
 /* Mints are fixed server-side (the SOL/ETH/BTC mints match this service's MARKETS table and Jupiter's custody docs: wETH/wBTC are the
@@ -141,7 +144,7 @@ export function mapDecrease(b) {
   return out;
 }
 
-/* ---- PDAs (UNVERIFIED seeds, fail closed). Seeds follow the community Anchor IDL examples Jupiter's docs link to. ---- */
+/* ---- PDAs: seed order and counter width cross-checked against published Jupiter Perps PDA examples. ---- */
 const P = (1n << 255n) - 19n;
 const mod = a => { a %= P; return a < 0n ? a + P : a; };
 const pow = (b, e) => { let r = 1n; b = mod(b); while (e > 0n) { if (e & 1n) r = r * b % P; b = b * b % P; e >>= 1n; } return r; };
@@ -162,7 +165,7 @@ export function findPda(seeds, programB58, b58decode, b58encode) {
   }
   throw new Error('no_pda');
 }
-export const SIDE_BYTE = Object.freeze({ long: 1, short: 2 });   /* UNVERIFIED encoding (IDL enum Side { None, Long, Short }) */
+export const SIDE_BYTE = Object.freeze({ long: 1, short: 2 });   /* Anchor enum Side { None=0, Long=1, Short=2 } */
 export function positionPda({ owner, custody, collateralCustody, side }, b58decode, b58encode) {
   return findPda([Buffer.from('position'), b58decode(owner), b58decode(JLP_POOL), b58decode(custody), b58decode(collateralCustody), Buffer.from([SIDE_BYTE[side]])], PERPS_PROGRAM, b58decode, b58encode);
 }
@@ -170,7 +173,7 @@ export function positionRequestPda({ position, counter, change }, b58decode, b58
   const c = Buffer.alloc(8); c.writeBigUInt64LE(BigInt(counter));
   return findPda([Buffer.from('position_request'), b58decode(position), c, Buffer.from([change === 'increase' ? 1 : 2])], PERPS_PROGRAM, b58decode, b58encode);
 }
-/* ---- argument decoding (UNVERIFIED layout, fail closed). Must match the frontend's ARG_LAYOUT exactly. ---- */
+/* ---- Borsh argument decoding: field order/types cross-checked against the published Jupiter Perps Anchor IDL. ---- */
 export const ARG_LAYOUT = Object.freeze({
   increase: [['sizeUsdDelta', 'u64'], ['collateralTokenDelta', 'u64'], ['side', 'side'], ['priceSlippage', 'u64'], ['jupiterMinimumOut', 'opt_u64'], ['counter', 'u64']],
   decrease: [['collateralUsdDelta', 'u64'], ['sizeUsdDelta', 'u64'], ['priceSlippage', 'u64'], ['jupiterMinimumOut', 'opt_u64'], ['entirePosition', 'opt_bool'], ['counter', 'u64']]
