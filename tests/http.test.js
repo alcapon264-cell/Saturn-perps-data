@@ -113,6 +113,8 @@ test('r118: A.A.I.H. readiness route is gone (404); markets carry symbol, mint, 
       const r2 = await json(await e2.get('/v1/perps/markets')); const s2 = r2.body.markets.find(m => m.market === 'SOL').stats24h;
       assert.ok(s2 && s2.hours >= 20 && s2.high >= s2.low && s2.open > 0 && typeof s2.changePct === 'number', JSON.stringify(s2)); assert.equal(s2.basis, 'saturn_sampled_1h');
       const eth = r2.body.markets.find(m => m.market === 'ETH'); assert.equal(eth.stats24h, null, 'ETH never gets SOL statistics');
+      /* r119: each market carries its OWN metadata */
+      for (const [k, n] of [['SOL', 'Solana'], ['ETH', 'Ethereum'], ['BTC', 'Bitcoin']]) { const x = r2.body.markets.find(m => m.market === k); assert.equal(x.name, n); assert.equal(x.category, 'major'); assert.equal(x.maxLeverage, 20); assert.equal(x.symbol, k + '-PERP'); }
     } finally { await e2.drop(); }
   } finally { await e.drop(); }
 });
@@ -173,7 +175,7 @@ test('responses never contain more than the documented fields (no raw upstream p
   const e = await boot(); try {
     await seedHistory(e, 'SOL', START, START + 3 * HOUR);
     const m = await json(await e.get('/v1/perps/markets'));
-    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), ['ageMs', 'executable', 'market', 'mint', 'observedAt', 'openInterest', 'price', 'state', 'stats24h', 'symbol', 'volume24h']);   /* r118 fields */
+    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), ['ageMs', 'category', 'executable', 'market', 'maxLeverage', 'mint', 'name', 'observedAt', 'openInterest', 'price', 'state', 'stats24h', 'symbol', 'volume24h']);   /* r119 fields */
     assert.ok(!JSON.stringify(m.body).includes('priceChange24H'));
   } finally { await e.drop(); }
 });
