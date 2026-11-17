@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js",
-    "live-check": "node scripts/live-check.mjs"
+    "live-check": "node scripts/live-check.mjs",
+    "view-check": "node scripts/view-markets-live-check.mjs"
   },
   "dependencies": {
     "pg": "^8.13.0",
