@@ -9,7 +9,7 @@ Records Jupiter Perps `GET /v1/market-stats` prices for SOL, ETH and BTC, builds
 - Stores every accepted price in PostgreSQL with a unique `(source, market, slot)` key. Invalid prices and unconfirmed jumps go to `perps_rejects`.
 - Builds 1m/5m/15m/1h/4h candles from stored observations. Missing time stays missing. No interpolation, no back-fill, no volume.
 - A candle is `valid` only if it is complete, has ≥ 80 % sample coverage, and no gap above `max(4 × interval, timeframe/6)`.
-- Saturn Perps has no A.A.I.H. readiness dependency or 60-hour startup gate. Market and candle data are served as they are recorded; candle validity rules remain enforced.
+- r118: `/v1/perps/markets` also returns `symbol`, `mint`, `executable` (true only where the on-chain execution metadata exists) and `stats24h` (open/high/low/last/change from this service's own recorded 1h candles; `null` when fewer than 20 of the last 24 hours were recorded). `volume24h` and `openInterest` are always `null`: they are not recorded, and nothing is estimated.
 - Candles are **sampled**: spikes between samples are invisible, so highs are understated and lows overstated compared with a venue's own candles. Every API response says `basis: "sampled"`.
 
 ## Layout
@@ -26,12 +26,13 @@ src/http.js ws.js      read-only API / Perps WebSocket hub
 src/app.js             wiring, leader lock, timers, retention, shutdown
 migrations/001_init.sql
 scripts/live-check.mjs, live-check.html   read-only Jupiter check (run by you, stage S2)
-tests/                 automated tests (see docs/TEST-RESULTS.md)
+tests/                 105 automated tests (see docs/TEST-RESULTS.md)
 docs/                  implementation report, security report, cost estimate, S2 live-check guide
 ```
 
 ## Endpoints (all GET, JSON)
 `/healthz` (public, minimal: `{ok, service, ready}`) · `/internal/status` (detailed, only when `STATUS_TOKEN` is set; bearer token; never callable from a browser) · `/v1/perps/markets` · `/v1/perps/candles?market=SOL&tf=1h&limit=200[&before=<unix>][&includeForming=1]`
+r118: the A.A.I.H. route `/v1/perps/readiness` was removed (now 404) together with `src/readiness.js`.
 Perps gateway (r115, see `docs/R115-GATEWAY.md`): `GET /v1/perps/jup/positions?walletAddress=<base58>&includeClosedPositions=false` · `GET /v1/perps/jup/market-stats?mint=<SOL|ETH|BTC mint>` (served from this service's recorder) · `POST /v1/perps/jup/positions/increase|decrease` and `POST /v1/perps/jup/execute` — **off by default** (`403 execution_disabled`).
 WebSocket: `wss://<host>/perps/live` (messages `perps_hello`, `perps_subscribed`, `perps_tick`, `perps_candle`, `perps_status`, `perps_error`, `pong`).
 Full contracts: `docs/IMPLEMENTATION-REPORT.md`.
@@ -56,3 +57,6 @@ Unit tests need nothing. Database, recorder, HTTP and WebSocket tests run the se
 node scripts/live-check.mjs --samples 4 --interval 15 --out live-check.json
 ```
 Read-only GETs only. Shows every response header (look for rate-limit headers), whether `price` is a number or string, and whether any timestamp field exists.
+
+## Adding a market (r118)
+The frontend market list is dynamic: it shows whatever `/v1/perps/markets` returns. A market appears once it is added to `MARKETS` in `src/config.js` (token mint) and the recorder has prices for it. It is only **tradeable** (`executable: true`) when its execution metadata (custody accounts) is added to `CUSTODY` in `src/perps-program.js`; otherwise Saturn lists it as **View only**. The current venue (Jupiter Perps, JLP pool) supports SOL, ETH and wBTC only. Its Beta markets use a different orderbook protocol and would need a separate integration; they are not listed.
