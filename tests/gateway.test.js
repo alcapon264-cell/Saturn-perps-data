@@ -122,7 +122,7 @@ test('prepare (execution enabled in TEST only): strict schema, size/type limits,
     assert.equal((await e.post(P, JSON.stringify({ ...incBody(), pad: 'x'.repeat(9000) }))).status, 413);
     assert.equal(e.g.calls.length, 0, 'invalid requests never reach Jupiter');
     const ok = await json(await e.post(P, incBody())); assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.match(ok.body.saturnTicket, /^[A-Za-z0-9_-]+\.[0-9a-f]{64}$/); assert.ok(!('evil' in ok.body.quote));
-    assert.deepEqual(e.g.calls[0].body, { walletAddress: W.pub, marketMint: MINT.SOL, inputMint: MINT.USDC, collateralMint: MINT.SOL, collateralTokenDelta: '25000000', side: 'long', leverage: '5.0', maxSlippageBps: '100' }, 'Saturn fields are MAPPED to Jupiter names; nothing Saturn-internal is forwarded');
+    assert.deepEqual(e.g.calls[0].body, { asset: 'SOL', inputToken: 'USDC', inputTokenAmount: '25000000', leverage: '5.0', maxSlippageBps: '100', side: 'long', walletAddress: W.pub }, 'Saturn fields are MAPPED to Jupiter names; nothing Saturn-internal is forwarded');
     const refuse = async (t, reason) => { e.clock.t += 61000; tx = t; e.g.script['/v1/positions/increase'] = () => J(200, { serializedTxBase64: b64(tx.unsigned), positionPubkey: tx.position, quote: {} }); const r = await json(await e.post(P, incBody(W.pub))); assert.equal(r.status, 502, reason); assert.equal(r.body.reason, reason); };
     await refuse(buildTx({ wallet: W.pub, extraProgram: rnd() }), 'program_not_allowed');
     await refuse(buildTx({ wallet: W.pub, payer: keypair().pub }), 'fee_payer_not_wallet');
@@ -218,15 +218,15 @@ test('request mapping: long/short collateral mint, input amount stays in INPUT t
     tx = buildTx({ wallet: W.pub, side: 'short', market: 'ETH', input: 'SOL', amount: '500000000' });
     const r = await json(await e.post('/v1/perps/jup/positions/increase', incBody(W.pub, { asset: 'ETH', side: 'short', inputToken: 'SOL', inputTokenAmount: '500000000', leverage: '3.0' })));
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.deepEqual(e.g.calls.at(-1).body, { walletAddress: W.pub, marketMint: MINT.ETH, inputMint: MINT.SOL, collateralMint: MINT.USDC, collateralTokenDelta: '500000000', side: 'short', leverage: '3.0', maxSlippageBps: '100' });
+    assert.deepEqual(e.g.calls.at(-1).body, { asset: 'ETH', inputToken: 'SOL', inputTokenAmount: '500000000', leverage: '3.0', maxSlippageBps: '100', side: 'short', walletAddress: W.pub });
     /* decrease */
     const pos = positionPda({ owner: W.pub, custody: CUSTODY.SOL, collateralCustody: CUSTODY.SOL, side: 'long' }, b58decode, b58encode);
     let dtx = null; e.g.script['/v1/positions/decrease'] = () => J(200, { serializedTxBase64: b64(dtx.unsigned), quote: {} });
     const D = '/v1/perps/jup/positions/decrease';
     for (const [body, build, want] of [
-      [{ positionPubkey: pos, receiveToken: 'USDC', entirePosition: true }, { entire: true }, { positionPubkey: pos, desiredMint: MINT.USDC, entirePosition: true }],
-      [{ positionPubkey: pos, receiveToken: 'SOL', sizeUsdDelta: '500000000', maxSlippageBps: '200' }, { sizeDelta: '500000000', input: 'SOL' }, { positionPubkey: pos, desiredMint: MINT.SOL, sizeUsdDelta: '500000000', collateralUsdDelta: '0', maxSlippageBps: '200' }],
-      [{ positionPubkey: pos, receiveToken: 'USDC', collateralUsdDelta: '25000000', maxSlippageBps: '200' }, { collDelta: '25000000' }, { positionPubkey: pos, desiredMint: MINT.USDC, collateralUsdDelta: '25000000', sizeUsdDelta: '0', maxSlippageBps: '200' }]]) {
+      [{ positionPubkey: pos, receiveToken: 'USDC', entirePosition: true }, { entire: true }, { positionPubkey: pos, receiveToken: 'USDC', entirePosition: true }],
+      [{ positionPubkey: pos, receiveToken: 'SOL', sizeUsdDelta: '500000000', maxSlippageBps: '200' }, { sizeDelta: '500000000', input: 'SOL' }, { positionPubkey: pos, receiveToken: 'SOL', sizeUsdDelta: '500000000', maxSlippageBps: '200' }],
+      [{ positionPubkey: pos, receiveToken: 'USDC', collateralUsdDelta: '25000000', maxSlippageBps: '200' }, { collDelta: '25000000' }, { positionPubkey: pos, receiveToken: 'USDC', collateralUsdDelta: '25000000', maxSlippageBps: '200' }]]) {
       e.clock.t += 61000; dtx = buildTx({ wallet: W.pub, kind: 'decrease', position: pos, ...build });
       const d = await json(await e.post(D, body)); assert.equal(d.status, 200, JSON.stringify(d.body)); assert.deepEqual(e.g.calls.at(-1).body, want);
     }
