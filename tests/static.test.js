@@ -21,11 +21,18 @@ test('isolation: the existing Saturn WebSocket constant and hosts never appear i
 
 test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere', () => {
   const callers = Object.entries(prod).filter(([f, t]) => /\bfetch\s*\(|fetchImpl\s*\(|https?\.request|net\.connect|axios/.test(t) && !/live-check/.test(f)).map(([f]) => f);
-  assert.deepEqual(callers.sort(), ['src/jupiter.js'], 'outbound HTTP lives in exactly one module');
+  assert.deepEqual(callers.sort(), ['src/jupiter.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly two modules (r120 adds the free view-only sources)');
+  const vs = prod['src/viewsources.js'];
+  assert.match(vs, /HL_HOST = 'api\.hyperliquid\.xyz'/); assert.match(vs, /CG_HOST = 'api\.coingecko\.com'/);
+  assert.match(vs, /u\.hostname !== HL_HOST\) throw/); assert.match(vs, /u\.hostname !== CG_HOST\) throw/, 'r120 sources have fixed hosts');
+  assert.match(vs, /base \+ '\/info'/); assert.match(vs, /base \+ '\/coins\/markets\?vs_currency=usd&ids='/, 'r120 sources have fixed paths');
+  assert.ok(!/console\.|log\(/.test(vs.replace(/\/\*[\s\S]*?\*\//g, '')), 'viewsources never logs (the CoinGecko key can never reach a log line)');
+  assert.ok(!/[?&]x_cg_demo_api_key=|key=' \+/.test(vs), 'the CoinGecko key is sent in a header only, never in a URL');
   const j = prod['src/jupiter.js'];
   const rec = j.slice(0, j.indexOf('createJupiterGateway')); assert.match(rec, /method: 'GET'/); assert.ok(!/method: '(POST|PUT|PATCH|DELETE)'/.test(rec), 'the market-stats recorder client is GET-only');
   assert.match(j, /GATEWAY_PATHS = Object\.freeze\(\{ positions: '\/positions', increase: '\/positions\/increase', decrease: '\/positions\/decrease', execute: '\/transaction\/execute' \}\)/, 'gateway upstream paths are a fixed allow-list');
   assert.match(j, /if \(!Object\.values\(GATEWAY_PATHS\)\.includes\(path\)\) throw/);
+  const tk = j.slice(j.indexOf('export function createTokenIcons')); assert.match(tk, /base \+ '\/search\?query='/); assert.match(tk, /method: 'GET'/); assert.ok(!/method: '(POST|PUT|PATCH|DELETE)'/.test(tk), 'r120 token-icon client is GET-only, fixed path');
   for (const [f, t] of Object.entries(prod)) {
     const code = t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     if (!['src/jupiter.js', 'src/gateway.js', 'src/perps-program.js'].includes(f) && !/live-check/.test(f)) assert.ok(!/\/(orders?|positions?|trades?|swap|increase|decrease|close|limit|deposit|withdraw|transfer)\b/i.test(code), f + ' references a trading endpoint outside the gateway');

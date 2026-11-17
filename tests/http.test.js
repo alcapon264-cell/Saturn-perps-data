@@ -97,7 +97,7 @@ test('candles: parameter validation matrix (fuzz)', opts, async () => {
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=500')).status, 200); assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=1')).status, 200);
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&includeForming=yes')).status, 200, 'unknown flag values are ignored, not echoed');
     assert.equal((await e.get('/nope')).status, 404); assert.equal((await e.get('/v1/perps/orders')).status, 404); assert.equal((await e.get('/v1/perps/candles/../../etc/passwd')).status, 404);
-    const tables = await e.db.rows("SELECT count(*)::int n FROM information_schema.tables WHERE table_name LIKE 'perps_%'"); assert.equal(tables[0].n, 8, 'no table was dropped (7 data tables + perps_exec_requests from migration 002)');
+    const tables = await e.db.rows("SELECT count(*)::int n FROM information_schema.tables WHERE table_name LIKE 'perps_%'"); assert.equal(tables[0].n, 12, 'no table was dropped (7 data tables + perps_exec_requests from 002 + 4 perps_view_* tables from 003)');
   } finally { await e.drop(); }
 });
 
@@ -175,7 +175,7 @@ test('responses never contain more than the documented fields (no raw upstream p
   const e = await boot(); try {
     await seedHistory(e, 'SOL', START, START + 3 * HOUR);
     const m = await json(await e.get('/v1/perps/markets'));
-    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), ['ageMs', 'category', 'executable', 'market', 'maxLeverage', 'mint', 'name', 'observedAt', 'openInterest', 'price', 'state', 'stats24h', 'symbol', 'volume24h']);   /* r119 fields */
+    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), ['ageMs', 'category', 'executable', 'icon', 'market', 'maxLeverage', 'mint', 'name', 'observedAt', 'openInterest', 'price', 'state', 'stats24h', 'symbol', 'volume24h']);   /* r119 fields */
     assert.ok(!JSON.stringify(m.body).includes('priceChange24H'));
   } finally { await e.drop(); }
 });
