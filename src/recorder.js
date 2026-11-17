@@ -8,13 +8,35 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
   const intervalMs = cfg.intervalSec * 1000;
   const S = Object.fromEntries(MARKET_KEYS.map((m, i) => [m, {
     market: m, idx: i, inFlight: null, failures: 0, rejects: 0, backoffUntil: 0, timer: null, nextAt: 0,
-    lastAcceptedMs: null, lastPrice: null, lastAttemptMs: null, lastOutcome: null, lastStatus: null, seq: 0, flat: 0, maxFlat: 0, lastChangeMs: null, lastState: 'no_data',
+    lastAcceptedMs: null, lastPrice: null, lastAttemptMs: null, lastRequestStartedMs: null, lastRequestFinishedMs: null, lastRequestDurationMs: null, lastDbWriteMs: null, lastDbOutcome: null, lastScheduledMs: null, skippedSlots: 0, seq: 0, flat: 0, maxFlat: 0, lastChangeMs: null, lastState: 'no_data',
     filter: createJumpFilter({ jumpPct: cfg.jumpPct, confirm: cfg.jumpConfirm, confirmTolPct: cfg.confirmTolPct })
   }]));
   let maxClock = 0;
   let running = false, tokens = 2, tokenAt = now(), lastRate = {}, dbDegraded = false;
   const queue = []; const QUEUE_MAX = 240;
   let flushing = null;
+  /* Observability is deliberately best-effort: diagnostics must never break sampling. */
+  const inc = (name, n = 1) => { try { metrics?.inc(name, n); } catch {} };
+  const observe = (name, ms) => { try { metrics?.observe(name, ms); } catch {} };
+  const safeLog = (...args) => { try { log(...args); } catch {} };
+  const writeObservation = async (observation, queued) => {
+    const started = now();
+    try {
+      const result = await store.insertObservation(observation);
+      const elapsed = Math.max(0, now() - started);
+      const state = S[observation.market];
+      state.lastDbWriteMs = elapsed; state.lastDbOutcome = result ? 'inserted' : 'duplicate';
+      observe('db_insert_ms', elapsed); inc(result ? 'db_insert_ok' : 'db_insert_duplicate');
+      return result;
+    } catch (error) {
+      const elapsed = Math.max(0, now() - started);
+      const state = S[observation.market];
+      state.lastDbWriteMs = elapsed; state.lastDbOutcome = 'error';
+      observe('db_insert_ms', elapsed); inc('db_write_errors');
+      safeLog('db_insert_failed', observation.market, 'queued=' + queued, String(error?.message || error).slice(0, 160));
+      throw error;
+    }
+  };
 
   const take = () => { const t = now(); tokens = Math.min(2, tokens + (t - tokenAt) / 1000 * cfg.maxRps); tokenAt = t; if (tokens >= 1) { tokens -= 1; return true; } return false; };
 
@@ -40,43 +62,46 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
     while (queue.length) {
       const q = queue[0];
       /* an observation whose 1-minute bucket has already been finalised is dropped, so candles stay a pure function of stored rows */
-      if (now() >= bucketEndMs(Math.floor(q.observedMs / 60000) * 60000, '1m') + intervalMs) { queue.shift(); metrics?.inc('queue_dropped_late'); continue; }
-      let inserted; try { inserted = await store.insertObservation(q); } catch { return false; }
-      queue.shift(); metrics?.inc('queue_flushed');
-      if (inserted) { try { await onObservationStored(q.market, q.observedMs); } catch { metrics?.inc('candle_update_errors'); } }
+      if (now() >= bucketEndMs(Math.floor(q.observedMs / 60000) * 60000, '1m') + intervalMs) { queue.shift(); inc('queue_dropped_late'); safeLog('queue_observation_dropped_late', q.market, 'age_ms=' + Math.max(0, now() - q.observedMs)); continue; }
+      let inserted; try { inserted = await writeObservation(q, true); } catch { inc('queue_flush_failures'); return false; }
+      queue.shift(); inc('queue_flushed');
+      if (inserted) { try { await onObservationStored(q.market, q.observedMs); } catch { inc('candle_update_errors'); } }
     }
     dbDegraded = false; return true;
     })().finally(() => { flushing = null; });
     return flushing;
   }
 
-  async function runOnce(m) {
+  async function runOnce(m, scheduledAt = null) {
     const s = S[m]; if (!running) return;
-    { const c = now(); if (c < maxClock - 2000) { metrics?.inc('clock_backwards_skipped'); return; } if (c > maxClock) maxClock = c; }
-    if (s.inFlight) { metrics?.inc('slot_skipped_inflight'); return; }
-    if (now() < s.backoffUntil) { metrics?.inc('slot_skipped_backoff'); return; }
-    if (!take()) { metrics?.inc('slot_skipped_budget'); return; }
+    { const c = now(); if (c < maxClock - 2000) { inc('clock_backwards_skipped'); S[m].skippedSlots++; return; } if (c > maxClock) maxClock = c; }
+    if (s.inFlight) { inc('slot_skipped_inflight'); s.skippedSlots++; return; }
+    if (now() < s.backoffUntil) { inc('slot_skipped_backoff'); s.skippedSlots++; return; }
+    if (!take()) { inc('slot_skipped_budget'); s.skippedSlots++; return; }
     s.inFlight = (async () => {
-      const t0 = now(); s.lastAttemptMs = t0;
-      const res = await jupiter(MARKETS[m]);
-      const observedMs = now();
+      const t0 = now(); s.lastAttemptMs = t0; s.lastRequestStartedMs = t0; s.lastScheduledMs = Number.isFinite(scheduledAt) ? scheduledAt : null;
+      if (Number.isFinite(scheduledAt)) observe('schedule_lag_ms', Math.max(0, t0 - scheduledAt));
+      let res;
+      try { res = await jupiter(MARKETS[m]); }
+      catch (error) { res = { ok: false, outcome: 'network', status: null, ms: Math.max(0, now() - t0), detail: String(error?.message || error) }; }
+      const observedMs = now(); s.lastRequestFinishedMs = observedMs; s.lastRequestDurationMs = Math.max(0, observedMs - t0);
       if (res.rateHeaders && Object.keys(res.rateHeaders).length) lastRate = { ...lastRate, ...res.rateHeaders, _at: observedMs };
-      metrics?.observe('fetch_ms', res.ms);
-      store.insertFetchLog({ market: m, atMs: observedMs, outcome: res.ok ? 'ok' : res.outcome, status: res.status ?? null, ms: res.ms }).catch(() => metrics?.inc('fetch_log_errors'));
+      observe('fetch_ms', res.ms);
+      store.insertFetchLog({ market: m, atMs: observedMs, outcome: res.ok ? 'ok' : res.outcome, status: res.status ?? null, ms: res.ms }).catch(() => inc('fetch_log_errors'));
       s.lastOutcome = res.ok ? 'ok' : res.outcome; s.lastStatus = res.status ?? null;
       if (!res.ok) {
-        s.failures++; metrics?.inc('fetch_' + res.outcome);
+        s.failures++; inc('fetch_' + res.outcome);
         if (res.outcome === 'malformed') { s.rejects++; store.insertReject({ market: m, observedMs, reason: 'malformed', detail: res.detail || 'malformed_response' }).catch(() => {}); }
-        const wait = backoff(s, res); log('fetch_failed', m, res.outcome, 'backoff_ms=' + Math.round(wait));
+        const wait = backoff(s, res); safeLog('fetch_failed', m, res.outcome, 'status=' + (res.status ?? 'none'), 'duration_ms=' + s.lastRequestDurationMs, 'backoff_ms=' + Math.round(wait));
         return;
       }
       s.failures = 0;
       const p = parseMarketStats(res.json, { maxPrice: cfg.maxPrice });
-      if (!p.ok) { s.rejects++; metrics?.inc('reject_' + p.reason); store.insertReject({ market: m, observedMs, reason: p.reason, detail: p.detail }).catch(() => {}); return; }
+      if (!p.ok) { s.rejects++; inc('reject_' + p.reason); store.insertReject({ market: m, observedMs, reason: p.reason, detail: p.detail }).catch(() => {}); return; }
       const pl = checkPlausible(p.price, cfg.priceRange && cfg.priceRange[m]);
-      if (!pl.ok) { s.rejects++; metrics?.inc('reject_implausible'); store.insertReject({ market: m, observedMs, reason: 'implausible', detail: pl.detail + ' price=' + p.price }).catch(() => {}); return; }
+      if (!pl.ok) { s.rejects++; inc('reject_implausible'); store.insertReject({ market: m, observedMs, reason: 'implausible', detail: pl.detail + ' price=' + p.price }).catch(() => {}); return; }
       const j = s.filter.check(p.price, observedMs);
-      if (!j.accept) { s.rejects++; metrics?.inc('reject_' + j.reason); store.insertReject({ market: m, observedMs, reason: j.reason, detail: 'price=' + p.price + ' pending=' + j.pending }).catch(() => {}); return; }
+      if (!j.accept) { s.rejects++; inc('reject_' + j.reason); store.insertReject({ market: m, observedMs, reason: j.reason, detail: 'price=' + p.price + ' pending=' + j.pending }).catch(() => {}); return; }
       s.rejects = 0;
       const obs = { market: m, slotMs: slotMs(observedMs, cfg.intervalSec), observedMs, price: p.price, fetchMs: res.ms };
       let inserted = null, persisted = true, callbackHandled = false;
@@ -85,7 +110,7 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
           /* Never bypass an older queued observation, even when its flush attempt fails. */
           if (queue.length >= QUEUE_MAX) {
             /* Preserve the existing FIFO backlog; reject this newest sample instead of evicting an older one. */
-            metrics?.inc('queue_overflow_dropped');
+            inc('queue_overflow_dropped'); safeLog('queue_overflow_drop', m, 'queued=' + queue.length);
             return;
           }
           queue.push(obs);
@@ -94,23 +119,23 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
           callbackHandled = persisted; /* flushQueue already emitted the candle update */
           inserted = true; /* queued observations remain accepted and are announced as unpersisted */
         } else {
-          inserted = await store.insertObservation(obs); dbDegraded = false;
+          inserted = await writeObservation(obs, false); dbDegraded = false;
         }
       } catch (e) {
-        persisted = false; dbDegraded = true; metrics?.inc('db_write_errors');
+        persisted = false; dbDegraded = true;
         if (queue.length >= QUEUE_MAX) {
           /* Do not evict the oldest queued observation to make room for a newer one. */
-          metrics?.inc('queue_overflow_dropped');
+          inc('queue_overflow_dropped'); safeLog('queue_overflow_drop', m, 'queued=' + queue.length);
           return;
         }
         queue.push(obs); inserted = true;
       }
-      if (!inserted) { metrics?.inc('duplicate_slot'); return; }
+      if (!inserted) { inc('duplicate_slot'); return; }
       const prev = s.lastPrice; s.lastAcceptedMs = observedMs; s.lastPrice = p.price; s.seq++; s.flat = prev === p.price ? s.flat + 1 : 0; if (s.flat > s.maxFlat) s.maxFlat = s.flat; if (prev !== p.price) s.lastChangeMs = observedMs;
-      metrics?.inc('observations_accepted');
+      inc('observations_accepted');
       onTick({ market: m, price: p.price, observedAt: Math.floor(observedMs / 1000), observedMs, seq: s.seq, persisted });
-      if (persisted && !callbackHandled) { try { await onObservationStored(m, observedMs); } catch (e) { metrics?.inc('candle_update_errors'); log('candle_update_failed', m, e && e.message); } }
-    })().catch(e => { metrics?.inc('recorder_errors'); log('recorder_error', m, e && e.message); }).finally(() => { s.inFlight = null; checkState(m); });
+      if (persisted && !callbackHandled) { try { await onObservationStored(m, observedMs); } catch (e) { inc('candle_update_errors'); safeLog('candle_update_failed', m, e && e.message); } }
+    })().catch(e => { inc('recorder_errors'); safeLog('recorder_error', m, e && e.message); }).finally(() => { s.inFlight = null; checkState(m); });
     return s.inFlight;
   }
 
@@ -121,7 +146,7 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
     const t = now(); let next = slotMs(t, cfg.intervalSec) + Math.floor(s.idx * intervalMs / MARKET_KEYS.length);
     while (next <= t) next += intervalMs;
     s.nextAt = next;
-    s.timer = setTimeoutImpl(() => { s.timer = null; if (!running) return; runOnce(m); schedule(m); }, next - t);
+    s.timer = setTimeoutImpl(() => { s.timer = null; if (!running) return; runOnce(m, next); schedule(m); }, next - t);
     s.timer?.unref?.();
   }
 
@@ -142,11 +167,11 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
     await Promise.allSettled(MARKET_KEYS.map(m => S[m].inFlight));
   }
   const summary = () => ({
-    running, intervalSec: cfg.intervalSec, dbDegraded, queued: queue.length, rateHeaders: lastRate,
+    running, intervalSec: cfg.intervalSec, dbDegraded, queued: queue.length, queueCapacity: QUEUE_MAX, oldestQueuedAgeMs: queue.length ? Math.max(0, now() - queue[0].observedMs) : 0, rateHeaders: lastRate,
     markets: Object.fromEntries(MARKET_KEYS.map(m => { const s = S[m], t = now(); return [m, {
       state: stateOf(m, t), lastObservationAt: s.lastAcceptedMs == null ? null : Math.floor(s.lastAcceptedMs / 1000), ageMs: s.lastAcceptedMs == null ? null : t - s.lastAcceptedMs,
       price: s.lastPrice, consecutiveFailures: s.failures, consecutiveRejects: s.rejects, circuitOpen: s.failures >= 5, suspectFlat: s.flat >= 20, unchangedRun: s.flat, maxUnchangedRun: s.maxFlat, lastPriceChangeAt: s.lastChangeMs == null ? null : Math.floor(s.lastChangeMs / 1000),
-      lastOutcome: s.lastOutcome, lastHttpStatus: s.lastStatus, backoffMs: Math.max(0, s.backoffUntil - t), seq: s.seq, jumpPending: s.filter.pendingCount }]; }))
+      lastOutcome: s.lastOutcome, lastHttpStatus: s.lastStatus, lastAttemptAt: s.lastAttemptMs, lastRequestStartedAt: s.lastRequestStartedMs, lastRequestFinishedAt: s.lastRequestFinishedMs, lastRequestDurationMs: s.lastRequestDurationMs, lastScheduledAt: s.lastScheduledMs, lastDbWriteMs: s.lastDbWriteMs, lastDbOutcome: s.lastDbOutcome, skippedSlots: s.skippedSlots, nextScheduledAt: s.nextAt, backoffMs: Math.max(0, s.backoffUntil - t), seq: s.seq, jumpPending: s.filter.pendingCount }]; }))
   });
   return Object.freeze({ start, stop, runOnce, summary, stateOf, checkState, flushQueue, seed, get running() { return running; }, _S: S, _queue: queue, SOURCE });
 }
