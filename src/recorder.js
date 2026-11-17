@@ -14,6 +14,7 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
   let maxClock = 0;
   let running = false, tokens = 2, tokenAt = now(), lastRate = {}, dbDegraded = false;
   const queue = []; const QUEUE_MAX = 240;
+  let flushing = null;
 
   const take = () => { const t = now(); tokens = Math.min(2, tokens + (t - tokenAt) / 1000 * cfg.maxRps); tokenAt = t; if (tokens >= 1) { tokens -= 1; return true; } return false; };
 
@@ -33,7 +34,9 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
     return wait;
   }
 
-  async function flushQueue() {
+  function flushQueue() {
+    if (flushing) return flushing;
+    flushing = (async () => {
     while (queue.length) {
       const q = queue[0];
       /* an observation whose 1-minute bucket has already been finalised is dropped, so candles stay a pure function of stored rows */
@@ -43,6 +46,8 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
       if (inserted) { try { await onObservationStored(q.market, q.observedMs); } catch { metrics?.inc('candle_update_errors'); } }
     }
     dbDegraded = false; return true;
+    })().finally(() => { flushing = null; });
+    return flushing;
   }
 
   async function runOnce(m) {
@@ -74,10 +79,19 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
       if (!j.accept) { s.rejects++; metrics?.inc('reject_' + j.reason); store.insertReject({ market: m, observedMs, reason: j.reason, detail: 'price=' + p.price + ' pending=' + j.pending }).catch(() => {}); return; }
       s.rejects = 0;
       const obs = { market: m, slotMs: slotMs(observedMs, cfg.intervalSec), observedMs, price: p.price, fetchMs: res.ms };
-      let inserted = null, persisted = true;
+      let inserted = null, persisted = true, callbackHandled = false;
       try {
-        if (queue.length) await flushQueue();
-        inserted = await store.insertObservation(obs); dbDegraded = false;
+        if (queue.length) {
+          /* Never bypass an older queued observation, even when its flush attempt fails. */
+          if (queue.length >= QUEUE_MAX) { queue.shift(); metrics?.inc('queue_overflow_dropped'); }
+          queue.push(obs);
+          const flushed = await flushQueue();
+          persisted = flushed && !queue.includes(obs);
+          callbackHandled = persisted; /* flushQueue already emitted the candle update */
+          inserted = true; /* queued observations remain accepted and are announced as unpersisted */
+        } else {
+          inserted = await store.insertObservation(obs); dbDegraded = false;
+        }
       } catch (e) {
         persisted = false; dbDegraded = true; metrics?.inc('db_write_errors');
         if (queue.length >= QUEUE_MAX) { queue.shift(); metrics?.inc('queue_overflow_dropped'); }
@@ -87,7 +101,7 @@ export function createRecorder({ jupiter, store, cfg, now = Date.now, setTimeout
       const prev = s.lastPrice; s.lastAcceptedMs = observedMs; s.lastPrice = p.price; s.seq++; s.flat = prev === p.price ? s.flat + 1 : 0; if (s.flat > s.maxFlat) s.maxFlat = s.flat; if (prev !== p.price) s.lastChangeMs = observedMs;
       metrics?.inc('observations_accepted');
       onTick({ market: m, price: p.price, observedAt: Math.floor(observedMs / 1000), observedMs, seq: s.seq, persisted });
-      if (persisted) { try { await onObservationStored(m, observedMs); } catch (e) { metrics?.inc('candle_update_errors'); log('candle_update_failed', m, e && e.message); } }
+      if (persisted && !callbackHandled) { try { await onObservationStored(m, observedMs); } catch (e) { metrics?.inc('candle_update_errors'); log('candle_update_failed', m, e && e.message); } }
     })().catch(e => { metrics?.inc('recorder_errors'); log('recorder_error', m, e && e.message); }).finally(() => { s.inFlight = null; checkState(m); });
     return s.inFlight;
   }
