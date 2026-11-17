@@ -1,0 +1,640 @@
+TAP version 13
+# Subtest: migrations: apply once, idempotent, checksum-protected, all tables present
+ok 1 - migrations: apply once, idempotent, checksum-protected, all tables present
+  ---
+  duration_ms: 72.273633
+  type: 'test'
+  ...
+# Subtest: schema: observation constraints (duplicate slot, non-positive price, unknown market)
+ok 2 - schema: observation constraints (duplicate slot, non-positive price, unknown market)
+  ---
+  duration_ms: 4.906903
+  type: 'test'
+  ...
+# Subtest: schema: candle CHECK constraints enforce OHLC integrity at the storage layer
+ok 3 - schema: candle CHECK constraints enforce OHLC integrity at the storage layer
+  ---
+  duration_ms: 5.814339
+  type: 'test'
+  ...
+# Subtest: store: observations range query, last/first, candle upsert immutability
+ok 4 - store: observations range query, last/first, candle upsert immutability
+  ---
+  duration_ms: 5.592679
+  type: 'test'
+  ...
+# Subtest: store: purge is limited to allow-listed tables and deletes in batches
+ok 5 - store: purge is limited to allow-listed tables and deletes in batches
+  ---
+  duration_ms: 2.916736
+  type: 'test'
+  ...
+# Subtest: store: SQL injection strings are inert (parameterised)
+ok 6 - store: SQL injection strings are inert (parameterised)
+  ---
+  duration_ms: 1.913026
+  type: 'test'
+  ...
+# Subtest: engine: rebuild from observations == independent oracle, for every timeframe; idempotent; complete rows frozen
+ok 7 - engine: rebuild from observations == independent oracle, for every timeframe; idempotent; complete rows frozen
+  ---
+  duration_ms: 404.928415
+  type: 'test'
+  ...
+# Subtest: engine: a hole in the data produces a hole in the candles (no fabrication)
+ok 8 - engine: a hole in the data produces a hole in the candles (no fabrication)
+  ---
+  duration_ms: 183.615153
+  type: 'test'
+  ...
+# Subtest: engine: onObservation keeps forming candles current; finalizeDue closes them after bucket end + grace
+ok 9 - engine: onObservation keeps forming candles current; finalizeDue closes them after bucket end + grace
+  ---
+  duration_ms: 22.558306
+  type: 'test'
+  ...
+# Subtest: leader lock: second session cannot take it; released/killed lock can be re-acquired
+ok 10 - leader lock: second session cannot take it; released/killed lock can be re-acquired
+  ---
+  duration_ms: 175.441504
+  type: 'test'
+  ...
+# Subtest: execution routes are OFF by default: 403 execution_disabled, body never read, Jupiter never called
+ok 11 - execution routes are OFF by default: 403 execution_disabled, body never read, Jupiter never called
+  ---
+  duration_ms: 106.641174
+  type: 'test'
+  ...
+# Subtest: positions: strict wallet + params, sanitized pass-through, cached, per-IP limited, upstream shape errors are honest
+ok 12 - positions: strict wallet + params, sanitized pass-through, cached, per-IP limited, upstream shape errors are honest
+  ---
+  duration_ms: 107.834689
+  type: 'test'
+  ...
+# Subtest: market-stats: served from the recorder only (no upstream call), fixed mints, no price when not live
+ok 13 - market-stats: served from the recorder only (no upstream call), fixed mints, no price when not live
+  ---
+  duration_ms: 73.189851
+  type: 'test'
+  ...
+# Subtest: prepare (execution enabled in TEST only): strict schema, size/type limits, Jupiter tx inspected, ticket issued
+ok 14 - prepare (execution enabled in TEST only): strict schema, size/type limits, Jupiter tx inspected, ticket issued
+  ---
+  duration_ms: 157.745091
+  type: 'test'
+  ...
+# Subtest: execute: ticket + exact message + valid wallet signature required; an allowed Origin is NOT authentication
+ok 15 - execute: ticket + exact message + valid wallet signature required; an allowed Origin is NOT authentication
+  ---
+  duration_ms: 88.710727
+  type: 'test'
+  ...
+# Subtest: execute: durable idempotency - duplicate taps / repeated submissions relay ONCE; state survives a restart
+ok 16 - execute: durable idempotency - duplicate taps / repeated submissions relay ONCE; state survives a restart
+  ---
+  duration_ms: 118.27758
+  type: 'test'
+  ...
+# Subtest: execute: ambiguous upstream (timeout / 5xx / malformed) -> state unknown, 202, NEVER retried; 4xx -> rejected; DB down -> not submitted
+ok 17 - execute: ambiguous upstream (timeout / 5xx / malformed) -> state unknown, 202, NEVER retried; 4xx -> rejected; DB down -> not submitted
+  ---
+  duration_ms: 118.497879
+  type: 'test'
+  ...
+# Subtest: execute: an expired ticket is refused before anything is relayed
+ok 18 - execute: an expired ticket is refused before anything is relayed
+  ---
+  duration_ms: 76.665847
+  type: 'test'
+  ...
+# Subtest: request mapping: long/short collateral mint, input amount stays in INPUT token atomic units, decrease full/partial/withdraw
+ok 19 - request mapping: long/short collateral mint, input amount stays in INPUT token atomic units, decrease full/partial/withdraw
+  ---
+  duration_ms: 94.064074
+  type: 'test'
+  ...
+# Subtest: code lock: environment flags alone cannot enable execution while the Jupiter contract is unverified
+ok 20 - code lock: environment flags alone cannot enable execution while the Jupiter contract is unverified
+  ---
+  duration_ms: 69.555624
+  type: 'test'
+  ...
+# Subtest: healthz is PUBLIC and MINIMAL: only ok/service/ready, no operational detail, no secrets
+ok 21 - healthz is PUBLIC and MINIMAL: only ok/service/ready, no operational detail, no secrets
+  ---
+  duration_ms: 90.094831
+  type: 'test'
+  ...
+# Subtest: /internal/status: does not exist unless STATUS_TOKEN is configured
+ok 22 - /internal/status: does not exist unless STATUS_TOKEN is configured
+  ---
+  duration_ms: 85.192351
+  type: 'test'
+  ...
+# Subtest: /internal/status: token required (401), never browser-callable (403), attempts rate-limited (429), correct token returns detail without secrets
+ok 23 - /internal/status: token required (401), never browser-callable (403), attempts rate-limited (429), correct token returns detail without secrets
+  ---
+  duration_ms: 103.983515
+  type: 'test'
+  ...
+# Subtest: markets: live / stale / down / no_data; price withheld when down
+ok 24 - markets: live / stale / down / no_data; price withheld when down
+  ---
+  duration_ms: 2386.632755
+  type: 'test'
+  ...
+# Subtest: candles: contract, ordering, completed-only default, includeForming, limit/before, valid flags, no volume field
+ok 25 - candles: contract, ordering, completed-only default, includeForming, limit/before, valid flags, no volume field
+  ---
+  duration_ms: 267.830681
+  type: 'test'
+  ...
+# Subtest: candles: parameter validation matrix (fuzz)
+ok 26 - candles: parameter validation matrix (fuzz)
+  ---
+  duration_ms: 92.52392
+  type: 'test'
+  ...
+# Subtest: r118: A.A.I.H. readiness route is gone (404); markets carry symbol, mint, executable, honest 24h stats and null volume/OI
+ok 27 - r118: A.A.I.H. readiness route is gone (404); markets carry symbol, mint, executable, honest 24h stats and null volume/OI
+  ---
+  duration_ms: 1014.015808
+  type: 'test'
+  ...
+# Subtest: CORS: allowed origin, foreign origin, no origin, preflight; write methods refused
+ok 28 - CORS: allowed origin, foreign origin, no origin, preflight; write methods refused
+  ---
+  duration_ms: 75.364667
+  type: 'test'
+  ...
+# Subtest: CORS is fail-closed when ALLOWED_ORIGINS is empty
+ok 29 - CORS is fail-closed when ALLOWED_ORIGINS is empty
+  ---
+  duration_ms: 65.261424
+  type: 'test'
+  ...
+# Subtest: rate limit: per-IP window; spoofed first x-forwarded-for entry cannot dodge it; limits are per route
+ok 30 - rate limit: per-IP window; spoofed first x-forwarded-for entry cannot dodge it; limits are per route
+  ---
+  duration_ms: 71.534
+  type: 'test'
+  ...
+# Subtest: database outage: 503 db_unavailable on data routes, health stays 200 with ok:false, recovers
+ok 31 - database outage: 503 db_unavailable on data routes, health stays 200 with ok:false, recovers
+  ---
+  duration_ms: 2250.282022
+  type: 'test'
+  ...
+# Subtest: shutdown: new data requests get 503 shutting_down
+ok 32 - shutdown: new data requests get 503 shutting_down
+  ---
+  duration_ms: 70.889959
+  type: 'test'
+  ...
+# Subtest: responses never contain more than the documented fields (no raw upstream payload)
+ok 33 - responses never contain more than the documented fields (no raw upstream payload)
+  ---
+  duration_ms: 183.993167
+  type: 'test'
+  ...
+# Subtest: all 12 real price strings parse, round-trip exactly and are inside the plausibility ranges
+ok 34 - all 12 real price strings parse, round-trip exactly and are inside the plausibility ranges
+  ---
+  duration_ms: 0.838861
+  type: 'test'
+  ...
+# Subtest: magnitude guard: x1e6 / x1e-6 scaled real prices are rejected as implausible (they still parse)
+ok 35 - magnitude guard: x1e6 / x1e-6 scaled real prices are rejected as implausible (they still parse)
+  ---
+  duration_ms: 0.140786
+  type: 'test'
+  ...
+# Subtest: config: PRICE_RANGE override is validated
+ok 36 - config: PRICE_RANGE override is validated
+  ---
+  duration_ms: 1.050521
+  type: 'test'
+  ...
+# Subtest: recorder replays the real SOL/ETH/BTC strings: stored exactly, receive-time basis, unchanged-run tracked
+ok 37 - recorder replays the real SOL/ETH/BTC strings: stored exactly, receive-time basis, unchanged-run tracked
+  ---
+  duration_ms: 205.009638
+  type: 'test'
+  ...
+# Subtest: recorder rejects an implausible FIRST observation (no jump baseline) and records it as a reject
+ok 38 - recorder rejects an implausible FIRST observation (no jump baseline) and records it as a reject
+  ---
+  duration_ms: 134.37151
+  type: 'test'
+  ...
+# Subtest: API declares timeBasis=receive_time
+ok 39 - API declares timeBasis=receive_time
+  ---
+  duration_ms: 91.208788
+  type: 'test'
+  ...
+# Subtest: live-check: GET-only to the Jupiter host, 3 requests per sample, reports headers / price type / timestamp-like keys
+ok 40 - live-check: GET-only to the Jupiter host, 3 requests per sample, reports headers / price type / timestamp-like keys
+  ---
+  duration_ms: 57.581651
+  type: 'test'
+  ...
+# Subtest: live-check: caps requests (max 20 samples), exits non-zero on 429 or network failure, never sends credentials
+ok 41 - live-check: caps requests (max 20 samples), exits non-zero on 429 or network failure, never sends credentials
+  ---
+  duration_ms: 235.939339
+  type: 'test'
+  ...
+# Subtest: pg adapter: pool is configured with timeouts and a small max; query passes params through
+ok 42 - pg adapter: pool is configured with timeouts and a small max; query passes params through
+  ---
+  duration_ms: 1.132871
+  type: 'test'
+  ...
+# Subtest: pg adapter: a failing script is rolled back and the connection is released
+ok 43 - pg adapter: a failing script is rolled back and the connection is released
+  ---
+  duration_ms: 0.499892
+  type: 'test'
+  ...
+# Subtest: pg adapter: leader lock uses ONE dedicated connection, is idempotent, reports loss, and releases
+ok 44 - pg adapter: leader lock uses ONE dedicated connection, is idempotent, reports loss, and releases
+  ---
+  duration_ms: 0.521349
+  type: 'test'
+  ...
+# Subtest: server.js refuses to start without DATABASE_URL and never prints secrets
+ok 45 - server.js refuses to start without DATABASE_URL and never prints secrets
+  ---
+  duration_ms: 54.019017
+  type: 'test'
+  ...
+# Subtest: samples every 15 s per market, staggered 0/5/10 s, never over the request budget
+ok 46 - samples every 15 s per market, staggered 0/5/10 s, never over the request budget
+  ---
+  duration_ms: 580.03479
+  type: 'test'
+  ...
+# Subtest: duplicate slot: two fetches in one slot -> one stored row, exactly one tick, one candle update
+ok 47 - duplicate slot: two fetches in one slot -> one stored row, exactly one tick, one candle update
+  ---
+  duration_ms: 90.473103
+  type: 'test'
+  ...
+# Subtest: failure modes: nothing invalid is stored; each is logged; other markets keep recording
+ok 48 - failure modes: nothing invalid is stored; each is logged; other markets keep recording
+  ---
+  duration_ms: 459.339914
+  type: 'test'
+  ...
+# Subtest: invalid prices from a healthy HTTP 200 are rejected and recorded as rejects
+ok 49 - invalid prices from a healthy HTTP 200 are rejected and recorded as rejects
+  ---
+  duration_ms: 217.997742
+  type: 'test'
+  ...
+# Subtest: 429: backoff ladder 30/60/120 s (cap), Retry-After honoured, no tight loop, recovery resets
+ok 50 - 429: backoff ladder 30/60/120 s (cap), Retry-After honoured, no tight loop, recovery resets
+  ---
+  duration_ms: 679.530537
+  type: 'test'
+  ...
+# Subtest: rate-limit headers are captured and surfaced in health (never assumed)
+ok 51 - rate-limit headers are captured and surfaced in health (never assumed)
+  ---
+  duration_ms: 96.849584
+  type: 'test'
+  ...
+# Subtest: global request budget caps total calls even with a short interval
+ok 52 - global request budget caps total calls even with a short interval
+  ---
+  duration_ms: 807.620744
+  type: 'test'
+  ...
+# Subtest: no overlap: a hung fetch makes the next slot skip, not queue; the client deadline still frees it
+ok 53 - no overlap: a hung fetch makes the next slot skip, not queue; the client deadline still frees it
+  ---
+  duration_ms: 376.749554
+  type: 'test'
+  ...
+# Subtest: jump filter end-to-end: lone spike rejected, sustained move accepted on the 3rd confirming sample
+ok 54 - jump filter end-to-end: lone spike rejected, sustained move accepted on the 3rd confirming sample
+  ---
+  duration_ms: 186.476274
+  type: 'test'
+  ...
+# Subtest: stale -> down transitions at 37.5 s and 5 min; recovery to live; status events published only on change
+ok 55 - stale -> down transitions at 37.5 s and 5 min; recovery to live; status events published only on change
+  ---
+  duration_ms: 409.65031
+  type: 'test'
+  ...
+# Subtest: restart recovery: gap preserved, state truthful, candles rebuilt, nothing back-filled
+ok 56 - restart recovery: gap preserved, state truthful, candles rebuilt, nothing back-filled
+  ---
+  duration_ms: 627.169362
+  type: 'test'
+  ...
+# Subtest: crash between observation insert and candle write: recovery rebuilds the missing candle
+ok 57 - crash between observation insert and candle write: recovery rebuilds the missing candle
+  ---
+  duration_ms: 77.86684
+  type: 'test'
+  ...
+# Subtest: database outage: ticks still published (persisted:false), bounded queue flushed in order on recovery, late items dropped, candles stay consistent
+ok 58 - database outage: ticks still published (persisted:false), bounded queue flushed in order on recovery, late items dropped, candles stay consistent
+  ---
+  duration_ms: 452.462169
+  type: 'test'
+  ...
+# Subtest: single writer: a second instance on the same database does not record; takes over when the leader goes away
+ok 59 - single writer: a second instance on the same database does not record; takes over when the leader goes away
+  ---
+  duration_ms: 125.346764
+  type: 'test'
+  ...
+# Subtest: leader loss while running stops the recorder (no split-brain)
+ok 60 - leader loss while running stops the recorder (no split-brain)
+  ---
+  duration_ms: 237.150605
+  type: 'test'
+  ...
+# Subtest: clock moving backwards: recording pauses instead of writing out-of-order data
+ok 61 - clock moving backwards: recording pauses instead of writing out-of-order data
+  ---
+  duration_ms: 161.006324
+  type: 'test'
+  ...
+# Subtest: retention: purges old observations/logs, keeps candles; runs once per UTC day
+ok 62 - retention: purges old observations/logs, keeps candles; runs once per UTC day
+  ---
+  duration_ms: 92.524487
+  type: 'test'
+  ...
+# Subtest: config safety: neither the public health route nor the protected status route leaks the database URL, API key or status token; logs are clean
+ok 63 - config safety: neither the public health route nor the protected status route leaks the database URL, API key or status token; logs are clean
+  ---
+  duration_ms: 125.713358
+  type: 'test'
+  ...
+# Subtest: isolation: the existing Saturn WebSocket constant and hosts never appear in this repository
+ok 64 - isolation: the existing Saturn WebSocket constant and hosts never appear in this repository
+  ---
+  duration_ms: 0.856126
+  type: 'test'
+  ...
+# Subtest: outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere
+ok 65 - outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere
+  ---
+  duration_ms: 2.429455
+  type: 'test'
+  ...
+# Subtest: HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bodies (behind the execution switch); no eval/child_process/dynamic require
+ok 66 - HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bodies (behind the execution switch); no eval/child_process/dynamic require
+  ---
+  duration_ms: 0.743466
+  type: 'test'
+  ...
+# Subtest: secrets: no keys, tokens, URLs with credentials or private hosts hard-coded; .env is ignored
+ok 67 - secrets: no keys, tokens, URLs with credentials or private hosts hard-coded; .env is ignored
+  ---
+  duration_ms: 1.589817
+  type: 'test'
+  ...
+# Subtest: dependencies: exactly ws and pg, nothing else
+ok 68 - dependencies: exactly ws and pg, nothing else
+  ---
+  duration_ms: 0.376581
+  type: 'test'
+  ...
+# Subtest: WebSocket is a separate path on this service; the spot path is not served
+ok 69 - WebSocket is a separate path on this service; the spot path is not served
+  ---
+  duration_ms: 0.303792
+  type: 'test'
+  ...
+# Subtest: migrations are additive and forward-only (no DROP/TRUNCATE/ALTER ... DROP)
+ok 70 - migrations are additive and forward-only (no DROP/TRUNCATE/ALTER ... DROP)
+  ---
+  duration_ms: 0.197065
+  type: 'test'
+  ...
+# Subtest: time: UTC alignment for every timeframe, incl. day/month/year boundaries
+ok 71 - time: UTC alignment for every timeframe, incl. day/month/year boundaries
+  ---
+  duration_ms: 1.707622
+  type: 'test'
+  ...
+# Subtest: candle: OHLC correct, first/last by time, high/low from extremes
+ok 72 - candle: OHLC correct, first/last by time, high/low from extremes
+  ---
+  duration_ms: 0.572281
+  type: 'test'
+  ...
+# Subtest: candle: zero observations -> no candle (never fabricated)
+ok 73 - candle: zero observations -> no candle (never fabricated)
+  ---
+  duration_ms: 0.104682
+  type: 'test'
+  ...
+# Subtest: candle: forming until bucket end + grace, complete after
+ok 74 - candle: forming until bucket end + grace, complete after
+  ---
+  duration_ms: 1.478575
+  type: 'test'
+  ...
+# Subtest: candle: validity thresholds at exact boundaries (coverage 0.80 and max gap)
+ok 75 - candle: validity thresholds at exact boundaries (coverage 0.80 and max gap)
+  ---
+  duration_ms: 0.318299
+  type: 'test'
+  ...
+# Subtest: candle: bucket-edge gaps count (recording started mid-bucket -> invalid)
+ok 76 - candle: bucket-edge gaps count (recording started mid-bucket -> invalid)
+  ---
+  duration_ms: 0.083234
+  type: 'test'
+  ...
+# Subtest: candle: property test vs brute-force oracle (random sets, shuffled-insertion invariance)
+ok 77 - candle: property test vs brute-force oracle (random sets, shuffled-insertion invariance)
+  ---
+  duration_ms: 13.285849
+  type: 'test'
+  ...
+# Subtest: candle: ohlcOk rejects invalid candles
+ok 78 - candle: ohlcOk rejects invalid candles
+  ---
+  duration_ms: 0.165143
+  type: 'test'
+  ...
+# Subtest: validate: price parsing accepts plain positive decimals only
+ok 79 - validate: price parsing accepts plain positive decimals only
+  ---
+  duration_ms: 0.438794
+  type: 'test'
+  ...
+# Subtest: jump filter: 20% rule, 3 consecutive confirming samples required
+ok 80 - jump filter: 20% rule, 3 consecutive confirming samples required
+  ---
+  duration_ms: 0.388129
+  type: 'test'
+  ...
+# Subtest: jump filter: a lone spike never gets in; pending resets when price returns
+ok 81 - jump filter: a lone spike never gets in; pending resets when price returns
+  ---
+  duration_ms: 0.108914
+  type: 'test'
+  ...
+# Subtest: jump filter: non-agreeing jumps do not confirm each other; down moves handled symmetrically
+ok 82 - jump filter: non-agreeing jumps do not confirm each other; down moves handled symmetrically
+  ---
+  duration_ms: 0.095715
+  type: 'test'
+  ...
+# Subtest: jump filter: seed() sets a baseline; reset() clears it
+ok 83 - jump filter: seed() sets a baseline; reset() clears it
+  ---
+  duration_ms: 0.049959
+  type: 'test'
+  ...
+# Subtest: jupiter client: fixed host only, GET only, no redirects, no credentials
+ok 84 - jupiter client: fixed host only, GET only, no redirects, no credentials
+  ---
+  duration_ms: 14.008379
+  type: 'test'
+  ...
+# Subtest: jupiter client: classifies every failure mode
+ok 85 - jupiter client: classifies every failure mode
+  ---
+  duration_ms: 42.856976
+  type: 'test'
+  ...
+# Subtest: jupiter client: captures rate-limit headers generically; sends API key only when configured, with the configured header name
+ok 86 - jupiter client: captures rate-limit headers generically; sends API key only when configured, with the configured header name
+  ---
+  duration_ms: 0.763686
+  type: 'test'
+  ...
+# Subtest: jupiter client: retry-after parsing
+ok 87 - jupiter client: retry-after parsing
+  ---
+  duration_ms: 0.349281
+  type: 'test'
+  ...
+# Subtest: config: defaults, bounds, secrets handling
+ok 88 - config: defaults, bounds, secrets handling
+  ---
+  duration_ms: 0.833323
+  type: 'test'
+  ...
+# Subtest: config: STATUS_TOKEN must be long and printable; empty means the status endpoint is disabled
+ok 89 - config: STATUS_TOKEN must be long and printable; empty means the status endpoint is disabled
+  ---
+  duration_ms: 0.147611
+  type: 'test'
+  ...
+# Subtest: limits: client IP ignores a spoofed first x-forwarded-for entry
+ok 90 - limits: client IP ignores a spoofed first x-forwarded-for entry
+  ---
+  duration_ms: 0.138384
+  type: 'test'
+  ...
+# Subtest: limits: sliding window limiter
+ok 91 - limits: sliding window limiter
+  ---
+  duration_ms: 0.162771
+  type: 'test'
+  ...
+# Subtest: subscribe while the database is down: no unhandled rejection, client gets an answer, subscription still works afterwards
+ok 92 - subscribe while the database is down: no unhandled rejection, client gets an answer, subscription still works afterwards
+  ---
+  duration_ms: 61.253802
+  type: 'test'
+  ...
+# Subtest: hello on connect: protocol fields, no raw data; path and origin enforced
+ok 93 - hello on connect: protocol fields, no raw data; path and origin enforced
+  ---
+  duration_ms: 103.622013
+  type: 'test'
+  ...
+# Subtest: ticks: sent only for NEW accepted observations of subscribed markets; seq monotonic; markets isolated
+ok 94 - ticks: sent only for NEW accepted observations of subscribed markets; seq monotonic; markets isolated
+  ---
+  duration_ms: 221.090505
+  type: 'test'
+  ...
+# Subtest: no message for rejected spikes, failed fetches or duplicate slots
+ok 95 - no message for rejected spikes, failed fetches or duplicate slots
+  ---
+  duration_ms: 525.612887
+  type: 'test'
+  ...
+# Subtest: candle messages: forming updates, then a final complete candle with its validity flag; only subscribed timeframes
+ok 96 - candle messages: forming updates, then a final complete candle with its validity flag; only subscribed timeframes
+  ---
+  duration_ms: 416.411186
+  type: 'test'
+  ...
+# Subtest: staleness: a status message is sent, ticks stop (last price is NOT repeated as fresh), recovery announces live
+ok 97 - staleness: a status message is sent, ticks stop (last price is NOT repeated as fresh), recovery announces live
+  ---
+  duration_ms: 695.050262
+  type: 'test'
+  ...
+# Subtest: protocol validation: every malformed client message gets a typed error and the socket survives
+ok 98 - protocol validation: every malformed client message gets a typed error and the socket survives
+  ---
+  duration_ms: 281.508046
+  type: 'test'
+  ...
+# Subtest: subscribe limits are cumulative per connection; unsubscribe stops delivery
+ok 99 - subscribe limits are cumulative per connection; unsubscribe stops delivery
+  ---
+  duration_ms: 203.110235
+  type: 'test'
+  ...
+# Subtest: per-connection message rate limit and 1 KB payload cap
+ok 100 - per-connection message rate limit and 1 KB payload cap
+  ---
+  duration_ms: 424.146178
+  type: 'test'
+  ...
+# Subtest: per-IP connection cap; slot freed on close
+ok 101 - per-IP connection cap; slot freed on close
+  ---
+  duration_ms: 308.305713
+  type: 'test'
+  ...
+# Subtest: heartbeat: a client that never answers pings is dropped; a normal client stays
+ok 102 - heartbeat: a client that never answers pings is dropped; a normal client stays
+  ---
+  duration_ms: 532.446806
+  type: 'test'
+  ...
+# Subtest: shutdown closes sockets with 1001
+ok 103 - shutdown closes sockets with 1001
+  ---
+  duration_ms: 307.245476
+  type: 'test'
+  ...
+# Subtest: hub backpressure (fake sockets): droppable messages skipped over the soft limit, slow consumers terminated over the hard limit
+ok 104 - hub backpressure (fake sockets): droppable messages skipped over the soft limit, slow consumers terminated over the hard limit
+  ---
+  duration_ms: 20.951322
+  type: 'test'
+  ...
+# Subtest: hub: unsubscribed clients get nothing; closed clients are cleaned up
+ok 105 - hub: unsubscribed clients get nothing; closed clients are cleaned up
+  ---
+  duration_ms: 0.321986
+  type: 'test'
+  ...
+1..105
+# tests 105
+# suites 0
+# pass 105
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 20373.396267
