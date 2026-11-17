@@ -1,12 +1,12 @@
 /* Candle runtime: keeps `forming` candles current, finalises closed buckets, and rebuilds from stored observations after a restart.
  * Candles are only ever a function of rows in perps_observations. Complete candles are immutable (enforced in SQL as well). */
-import { TFS, bucketStartMs, bucketEndMs } from './time.js';
+import { TFS, TF_SEC, bucketStartMs, bucketEndMs } from './time.js';
 import { buildCandle, ohlcOk, groupByBucket } from './candles.js';
 import { SOURCE } from './config.js';
 
-export function createCandleEngine({ store, cfg, now = Date.now, metrics, onCandle = () => {} }) {
+export function createCandleEngine({ store, cfg, now = Date.now, metrics, onCandle = () => {}, sourceTag = SOURCE }) {
   const graceMs = cfg.intervalSec * 1000;
-  const opts = (startMs, tf, nowMs) => ({ startMs, tf, intervalSec: cfg.intervalSec, nowMs, graceMs, coverageMin: cfg.coverageMin, sourceTag: SOURCE });
+  const opts = (startMs, tf, nowMs) => ({ startMs, tf, intervalSec: cfg.intervalSec, nowMs, graceMs, coverageMin: cfg.coverageMin, sourceTag });
 
   async function write(market, k) {
     if (!ohlcOk(k)) { metrics?.inc('candle_ohlc_rejected'); return false; }
@@ -38,14 +38,16 @@ export function createCandleEngine({ store, cfg, now = Date.now, metrics, onCand
     return n;
   }
 
-  /* Restart recovery: rebuild every retained observation bucket, including holes before newer completed candles.
-   * Complete candles remain immutable in the store; only missing and forming buckets can be written/refreshed. */
+  /* Restart recovery: rebuild forming + never-written buckets from stored observations. Idempotent. */
   async function recover(market) {
     const t = now(), floor = t - cfg.retention.observationsDays * 86400000;
-    const obs = await store.observations(market, floor, t + 1);
+    const since = {};
+    for (const tf of TFS) { const last = await store.lastCompleteStartMs(market, tf); since[tf] = last == null ? floor : last + TF_SEC[tf] * 1000; }
+    const from = Math.max(floor, Math.min(...Object.values(since)));
+    const obs = await store.observations(market, from, t + 1);
     let rebuilt = 0;
     for (const tf of TFS) {
-      for (const [s, arr] of groupByBucket(obs, tf)) {
+      for (const [s, arr] of groupByBucket(obs.filter(o => o.t >= since[tf]), tf)) {
         const k = buildCandle(arr, opts(s, tf, t));
         if (k && await write(market, k)) rebuilt++;
       }

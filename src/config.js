@@ -25,6 +25,29 @@ export const MARKET_META = Object.freeze({
  * Override per market with PRICE_RANGE_SOL="min,max" etc. */
 export const DEFAULT_PRICE_RANGE = Object.freeze({ SOL: [0.5, 50000], ETH: [20, 500000], BTC: [1000, 5000000] });
 
+/* r120 VIEW-ONLY markets. Fixed server-side table: users can never supply a coin, id or host.
+ * Price: Hyperliquid public allMids (free, no key). Cross-check: CoinGecko Demo (free key, backend only). Never executable:
+ * none of these keys exists in MARKETS or in perps-program.js CUSTODY, and the gateway refuses anything outside SOL/ETH/BTC.
+ * coingecko.symbol / coingecko.name are what CoinGecko must return for that id; a mismatch means the id is wrong and the market stays hidden.
+ * logo: 'coingecko' = the image URL CoinGecko returns for the verified id; null = no logo is used (see BNB below). */
+export const VIEW_SOURCE = 'hyperliquid:allMids';
+/* dex: '' = Hyperliquid's main perps; 'xyz' = the HIP-3 market set deployed and operated by Trade.xyz (equities).
+ * venueCoins: the exact Hyperliquid names to look for, first listed one wins (verified at run time from metaAndAssetCtxs, every 60 s).
+ * check: 'coingecko' = price cross-checked against CoinGecko (crypto); 'oracle' = mid price checked against the market's own oracle price
+ *        (CoinGecko does not cover equities, and no free equity feed was found).
+ * category: 'major' | 'stock'. Nothing here is executable. */
+export const VIEW_MARKET_TABLE = Object.freeze({
+  HYPE:    Object.freeze({ name: 'Hyperliquid', dex: '', venueCoins: ['HYPE'], check: 'coingecko', coingeckoId: 'hyperliquid', cgSymbol: 'hype', cgName: 'Hyperliquid', category: 'major', range: [0.01, 100000] }),
+  ZEC:     Object.freeze({ name: 'Zcash', dex: '', venueCoins: ['ZEC'], check: 'coingecko', coingeckoId: 'zcash', cgSymbol: 'zec', cgName: 'Zcash', category: 'major', range: [0.1, 1000000] }),
+  JUP:     Object.freeze({ name: 'Jupiter', dex: '', venueCoins: ['JUP'], check: 'coingecko', coingeckoId: 'jupiter-exchange-solana', cgSymbol: 'jup', cgName: 'Jupiter', category: 'major', range: [0.0001, 10000] }),
+  SNDK:    Object.freeze({ name: 'Sandisk', dex: 'xyz', venueCoins: ['xyz:SNDK'], check: 'oracle', category: 'stock', range: [1, 1000000] }),
+  SPCX:    Object.freeze({ name: 'SpaceX', dex: 'xyz', venueCoins: ['xyz:SPCX', 'xyz:SPACEX'], check: 'oracle', category: 'stock', range: [1, 1000000] }),
+  NEAR:    Object.freeze({ name: 'NEAR Protocol', dex: '', venueCoins: ['NEAR'], check: 'coingecko', coingeckoId: 'near', cgSymbol: 'near', cgName: 'NEAR Protocol', category: 'major', range: [0.001, 100000] }),
+  SKHYNIX: Object.freeze({ name: 'SK hynix', dex: 'xyz', venueCoins: ['xyz:SKHYNIX', 'xyz:SKHX'], check: 'oracle', category: 'stock', range: [1, 10000000] }),
+  BNB:     Object.freeze({ name: 'BNB', dex: '', venueCoins: ['BNB'], check: 'coingecko', coingeckoId: 'binancecoin', cgSymbol: 'bnb', cgName: 'BNB', category: 'major', range: [1, 10000000] })
+});
+export const VIEW_KEYS_ALL = Object.freeze(Object.keys(VIEW_MARKET_TABLE));
+
 export const JUPITER_HOST = 'perps-api.jup.ag';
 export const JUPITER_BASE = 'https://perps-api.jup.ag/v1';
 
@@ -60,6 +83,21 @@ export function loadConfig(env = process.env) {
     jumpConfirm: Math.round(num(env.JUMP_CONFIRM, 3, { min: 2, max: 10 })),
     confirmTolPct: num(env.CONFIRM_TOL_PCT, 5, { min: 0.1, max: 20 }),
     maxPrice: 1e9,
+    /* r121 view-only markets. Off unless VIEW_MARKETS lists them. Crypto markets need COINGECKO_DEMO_KEY for their cross-check; without it they stay listed as 'Price unavailable'. */
+    view: Object.freeze({
+      markets: Object.freeze(list(env.VIEW_MARKETS).map(x => x.toUpperCase()).filter((x, i, a) => VIEW_KEYS_ALL.includes(x) && a.indexOf(x) === i)),
+      unknownMarkets: Object.freeze(list(env.VIEW_MARKETS).map(x => x.toUpperCase()).filter(x => !VIEW_KEYS_ALL.includes(x))),
+      coingeckoKey: env.COINGECKO_DEMO_KEY || '',
+      hyperliquidBase: env.HYPERLIQUID_INFO_BASE || 'https://api.hyperliquid.xyz',
+      crossCheckMs: 5 * 60 * 1000,                       /* one CoinGecko request per 5 minutes at most */
+      crossCheckMaxAgeMs: 20 * 60 * 1000,                /* no successful check for 20 min -> not shown as reliable */
+      mismatchPct: num(env.VIEW_MISMATCH_PCT, 2, { min: 0.5, max: 10 }),
+      coingeckoMonthlyCap: num(env.COINGECKO_MONTHLY_CAP, 9500, { min: 100, max: 10000 }),   /* Demo plan: 10,000 calls / month */
+      ctxMs: 60 * 1000,                                   /* listing + oracle + previous-day price, re-read every 60 s (metaAndAssetCtxs, weight 20 per market set) */
+      ctxMaxAgeMs: 3 * 60 * 1000,                          /* oracle check / 24 h reference older than this is not used */
+      frozenMs: 10 * 60 * 1000,                          /* price unchanged for 10 min -> treated as stale */
+      minMidsGapMs: 10000                                /* at most one allMids request per 10 s (weight 2; limit is 1200 weight / min / IP) */
+    }),
     retention: { observationsDays: num(env.RETAIN_OBS_DAYS, 35, { min: 8 }), logDays: num(env.RETAIN_LOG_DAYS, 7, { min: 1 }) },
     http: { ipLimitPerMin: num(env.HTTP_LIMIT_PER_MIN, 60, { min: 1 }), trustedProxyHops: Math.round(num(env.TRUSTED_PROXY_HOPS, 1, { min: 0, max: 5 })) },
     ws: { maxConnPerIp: num(env.WS_MAX_CONN_PER_IP, 20, { min: 1 }), maxMarkets: 3, maxMsgPerWindow: 30, windowMs: 10000, maxPayload: 1024, heartbeatMs: 25000, softBuffer: 256 * 1024, hardBuffer: 1024 * 1024 },
@@ -89,6 +127,8 @@ export function validateConfig(cfg) {
   if (cfg.statusToken && (cfg.statusToken.length < 24 || !/^[\x21-\x7e]+$/.test(cfg.statusToken))) errs.push('STATUS_TOKEN must be at least 24 printable characters');
   if ((cfg.jupiterKeyHeader && !cfg.jupiterKey) || (!cfg.jupiterKeyHeader && cfg.jupiterKey)) errs.push('JUPITER_API_KEY and JUPITER_API_KEY_HEADER must be set together');
   if (cfg.jupiterKeyHeader && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.jupiterKeyHeader)) errs.push('JUPITER_API_KEY_HEADER has invalid characters');
+  if (cfg.view && cfg.view.unknownMarkets.length) errs.push('VIEW_MARKETS has unknown markets: ' + cfg.view.unknownMarkets.join(',') + ' (allowed: ' + VIEW_KEYS_ALL.join(',') + ')');
+  if (cfg.view && cfg.view.markets.length && !/^https:\/\/api\.hyperliquid\.xyz$/.test(cfg.view.hyperliquidBase)) errs.push('HYPERLIQUID_INFO_BASE must be https://api.hyperliquid.xyz');
   if (cfg.gateway && cfg.gateway.ticketSecret && cfg.gateway.ticketSecret.length < 32) errs.push('GATEWAY_TICKET_SECRET must be at least 32 characters');
   return errs;
 }

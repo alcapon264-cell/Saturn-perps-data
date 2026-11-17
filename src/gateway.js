@@ -15,11 +15,15 @@
  *   - durable idempotency by signature (PostgreSQL): a signature is relayed at most once; duplicates get the stored state
  *   - an ambiguous upstream result (timeout / network / 5xx) is recorded as 'unknown' and NEVER retried; the client checks the chain */
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { MARKETS } from './config.js';
+import { MARKETS, VIEW_MARKET_TABLE } from './config.js';
 import { parseTx, msgHash, verifyEd25519, b64ToBytes, b58encode, b58decode, isPubkey } from './solana.js';
 import { inspectPerpsTx, checkAgainstRequest, mapIncrease, mapDecrease, ACTIONS, MINT, CONTRACT_BLOCKERS } from './perps-program.js';
 
 const MINT_TO_MARKET = Object.fromEntries(Object.entries(MARKETS).map(([k, v]) => [v, k]));
+/* r120: view-only markets can never be prepared, priced for trading or relayed. They are not in MARKETS / CUSTODY; this is a second, explicit lock. */
+const VIEW_ONLY = new Set(Object.keys(VIEW_MARKET_TABLE));
+const mentionsViewOnly = b => !!b && typeof b === 'object' && ['asset', 'market', 'symbol'].some(k => typeof b[k] === 'string' && VIEW_ONLY.has(b[k].toUpperCase().replace(/-PERP$/, '')));
+for (const k of VIEW_ONLY) if (k in MARKETS) throw new Error('view-only market ' + k + ' must never be executable');
 const ASSETS = new Set(['SOL', 'ETH', 'BTC']), TOKENS = new Set(['USDC', 'SOL', 'ETH', 'BTC']);
 const POS_KEYS = ['asset', 'side', 'leverage', 'sizeUsd', 'entryPriceUsd', 'markPriceUsd', 'collateralUsd', 'liquidationPriceUsd', 'pnlBeforeFeesUsd', 'pnlAfterFeesUsd', 'createdTime', 'assetMint', 'positionPubkey'];
 const scalar = v => v === null || (typeof v === 'number' && Number.isFinite(v)) || (typeof v === 'string' && v.length <= 64 && /^[\x20-\x7e]*$/.test(v));
@@ -182,6 +186,7 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
       if (!G.executionEnabled) { metrics?.inc('gw_exec_disabled'); return G.executionRequested ? [403, { ok: false, error: 'execution_contract_unverified', message: 'Perps execution is locked: the execution contract is not verified.', blockers: CONTRACT_BLOCKERS }] : [403, { ok: false, error: 'execution_disabled', message: 'Perps execution is disabled on this service.' }]; }
       if ([...q.keys()].length) return [400, { ok: false, error: 'bad_request' }];
       let b; try { b = await readBody(req); } catch (e) { return [e.code || 400, { ok: false, error: e.message }]; }
+      if (mentionsViewOnly(b)) { metrics?.inc('gw_view_only_refused'); return [403, { ok: false, error: 'view_only_market', message: 'This market is view-only on Saturn. It cannot be traded.' }]; }
       if (path.endsWith('/increase')) return increase(b, ip);
       if (path.endsWith('/decrease')) return decrease(b, ip);
       return execute(b, ip);

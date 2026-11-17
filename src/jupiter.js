@@ -84,3 +84,48 @@ export function createJupiterGateway({ fetchImpl = globalThis.fetch, base = JUPI
     execute: body => call('POST', GATEWAY_PATHS.execute, { body, deadlineMs: Math.max(timeoutMs, 20000) })
   };
 }
+
+/* ---- r120 token icons (Jupiter Tokens API V2). Lives here so ALL outbound HTTP stays in this one module. Each market's OFFICIAL token icon comes from Jupiter's Tokens API V2 (GET /tokens/v2/search?query=<mint,mint,...>),
+ * the token metadata Jupiter publishes per mint. READ-ONLY, fixed host and path, no cookies, no redirects, bounded body, hard deadline.
+ * The API key (optional, server-side only) is never sent to browsers. Icons are cached; a failure keeps the last good set and retries later.
+ * Only https URLs are passed on; nothing is drawn or substituted when a token has no icon. */
+export const TOKENS_HOST = 'api.jup.ag';
+export const TOKENS_BASE = 'https://api.jup.ag/tokens/v2';
+const ICON_MAX_BODY = 256 * 1024;
+const ICON_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+export const iconOk = u => typeof u === 'string' && u.length <= 300 && /^https:\/\/[^\s"'<>\\]+$/.test(u);
+
+export function createTokenIcons({ fetchImpl = globalThis.fetch, base = TOKENS_BASE, keyHeader = '', key = '', now = Date.now, timeoutMs = 6000, ttlMs = 6 * 3600 * 1000, retryMs = 10 * 60 * 1000, log = () => {} } = {}) {
+  const u = new URL(base);
+  if (u.protocol !== 'https:' || u.hostname !== TOKENS_HOST) throw new Error('tokens_base_not_allowed');
+  const headers = { accept: 'application/json' }; if (keyHeader && key) headers[keyHeader] = key;
+  let icons = new Map(), at = 0, nextTry = 0, inflight = null;
+
+  async function load(mints) {
+    const ac = new AbortController(); let timer;
+    const deadline = new Promise((_, rej) => { timer = setTimeout(() => { ac.abort(); rej(new Error('deadline')); }, timeoutMs); }); deadline.catch(() => {});
+    try {
+      const res = await Promise.race([fetchImpl(base + '/search?query=' + encodeURIComponent(mints.join(',')), { method: 'GET', headers, signal: ac.signal, redirect: 'error', credentials: 'omit', cache: 'no-store' }), deadline]);
+      if (!res || !res.ok) throw new Error('http_' + (res && res.status));
+      const text = await Promise.race([res.text(), deadline]); if (text.length > ICON_MAX_BODY) throw new Error('body_too_large');
+      const arr = JSON.parse(text); if (!Array.isArray(arr)) throw new Error('not_array');
+      const out = new Map();
+      for (const t of arr) if (t && typeof t.id === 'string' && mints.includes(t.id) && iconOk(t.icon)) out.set(t.id, t.icon);   /* only the mints asked for */
+      return out;
+    } finally { clearTimeout(timer); }
+  }
+
+  /* Non-blocking: returns the cached icon map now and refreshes in the background when due. */
+  function get(mints) {
+    const ms = [...new Set(mints.filter(m => typeof m === 'string' && ICON_MINT.test(m)))].slice(0, 100);
+    const t = now();
+    if (ms.length && !inflight && t >= nextTry && (t - at >= ttlMs || ms.some(m => !icons.has(m)) && t - at >= retryMs)) {
+      inflight = load(ms).then(m => { icons = new Map([...icons, ...m]); at = now(); nextTry = 0; })
+        .catch(e => { nextTry = now() + retryMs; log('token_icons_failed', e && e.message); })
+        .finally(() => { inflight = null; });
+    }
+    return icons;
+  }
+  return Object.freeze({ get, get pending() { return inflight; } });
+}
+
