@@ -95,18 +95,13 @@ export function checkAgainstRequest(ins, { kind, wallet, expect }, b58decode, b5
   return { ok: true, args: g };
 }
 
-/* ===================== r117: Jupiter request mapping, PDA checks, argument decoding =====================
- * STATUS OF THE JUPITER REST CONTRACT (checked 2026-11-16):
- *   - Jupiter's developer docs (developers.jup.ag/docs/perps) say the Perps API is "a work in progress" and document NO REST endpoints.
- *   - Jupiter's own integration skill (jup-ag/agent-skills, integrating-jupiter) says: "No REST endpoints yet. Interact on-chain via Anchor IDL."
- *   - Jupiter's user docs (Technical Reference) describe two paths: request + keeper fulfilment, and a "single transaction" path that a
- *     Jupiter keeper CO-SIGNS. The request/response contract of either path over REST is not published.
- * Therefore EXECUTE_CONTRACT_VERIFIED stays false. While it is false the transaction routes refuse to run even if the environment asks
- * for execution. Change it ONLY after the field names, units, transaction type and execute contract are confirmed by Jupiter. */
+/* Jupiter Perps REST contract: request field names are taken from the published
+ * Perps API specification. This does NOT verify the on-chain instruction layout,
+ * PDA seeds, or transaction response semantics below. Execution therefore stays locked. */
 export const EXECUTE_CONTRACT_VERIFIED = false;
 export const CONTRACT_BLOCKERS = Object.freeze([
-  'Jupiter does not publish a Perps REST contract (build-transaction request fields, transaction types, POST /transaction/execute request and response).',
-  'The Borsh argument layout and Side encoding of the market-request instructions, and the Position / PositionRequest PDA seeds, are not in Jupiter\'s official docs.',
+  'The Borsh argument layout and Side encoding of the market-request instructions, and the Position / PositionRequest PDA seeds, are not verified against the official IDL.',
+  'The live increase/decrease transaction response and keeper-signature requirements have not been verified against Jupiter.',
   'No safe live test against Jupiter\'s API has been performed.'
 ]);
 
@@ -121,32 +116,27 @@ export const MINT = Object.freeze({
 });
 export const DECIMALS = Object.freeze({ SOL: 9, ETH: 8, BTC: 8, USDC: 6 });
 
-/* Saturn request -> Jupiter request (field names as specified for r117; NOT confirmed by Jupiter, see above).
- * collateralMint: the POSITION's collateral token. Jupiter: long positions use the market token, short positions use USDC (or USDT).
- * inputMint + collateralTokenDelta: the token the user PAYS with and its amount in that token's atomic units (PositionRequest docs:
- *   "mint: input mint for opens and deposits"; the program swaps input -> collateral itself). It is never converted here. */
-export function mapIncrease(b, { transactionType = '' } = {}) {
-  const marketMint = MINT[b.asset];
-  const out = {
-    walletAddress: b.walletAddress,
-    marketMint,
-    inputMint: MINT[b.inputToken],
-    collateralMint: b.side === 'long' ? marketMint : MINT.USDC,
-    collateralTokenDelta: b.inputTokenAmount,
-    side: b.side,
+/* Saturn request -> Jupiter's documented Perps REST request schema.
+ * Keep this mapping explicit: no guessed mint aliases or transactionType are sent. */
+export function mapIncrease(b) {
+  return {
+    asset: b.asset,
+    inputToken: b.inputToken,
+    inputTokenAmount: b.inputTokenAmount,
     leverage: b.leverage,
-    maxSlippageBps: b.maxSlippageBps
+    maxSlippageBps: b.maxSlippageBps,
+    side: b.side,
+    walletAddress: b.walletAddress
   };
-  if (transactionType) out.transactionType = transactionType;
-  return out;
 }
-/* USD deltas are atomic USD with 6 decimals (Jupiter PositionRequest docs: "a position request to increase ... by 10 USDC will have a
- * sizeUsdDelta = 10000000"). desiredMint = the token the user wants to receive. */
 export function mapDecrease(b) {
-  const out = { positionPubkey: b.positionPubkey, desiredMint: MINT[b.receiveToken] };
+  const out = {
+    positionPubkey: b.positionPubkey,
+    receiveToken: b.receiveToken
+  };
   if (b.entirePosition === true) out.entirePosition = true;
-  if (b.sizeUsdDelta !== undefined) { out.sizeUsdDelta = b.sizeUsdDelta; out.collateralUsdDelta = '0'; }
-  if (b.collateralUsdDelta !== undefined) { out.collateralUsdDelta = b.collateralUsdDelta; out.sizeUsdDelta = '0'; }
+  if (b.sizeUsdDelta !== undefined) out.sizeUsdDelta = b.sizeUsdDelta;
+  if (b.collateralUsdDelta !== undefined) out.collateralUsdDelta = b.collateralUsdDelta;
   if (b.maxSlippageBps !== undefined) out.maxSlippageBps = b.maxSlippageBps;
   return out;
 }

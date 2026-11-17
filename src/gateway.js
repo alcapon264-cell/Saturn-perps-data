@@ -117,8 +117,8 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
       || typeof b.maxSlippageBps !== 'string' || !/^\d{2,3}$/.test(b.maxSlippageBps) || !(slip >= 10 && slip <= 500) || !isPubkey(b.walletAddress)) return [400, { ok: false, error: 'bad_request' }];
     if (limiter(ip + '|gw-prep', G.preparePerMinIp) || limiter('w:' + b.walletAddress + '|gw-prep', G.preparePerMinWallet)) return [429, { ok: false, error: 'rate_limited', message: 'Too many requests. Wait a moment and try again.' }, { 'retry-after': '30' }];
     if (!budget()) return [503, { ok: false, error: 'upstream_busy' }];
-    /* r117: Saturn's request is MAPPED to Jupiter's field names (perps-program.js mapIncrease); Saturn-internal names are never forwarded */
-    const r = await upstream.increase(mapIncrease(b, { transactionType: G.transactionType }));
+    /* Forward only the documented Jupiter increase request fields. */
+    const r = await upstream.increase(mapIncrease(b));
     const c = checkBuilt(r, { kind: 'increase', wallet: b.walletAddress, expect: { market: b.asset, side: b.side, inputMint: MINT[b.inputToken], collateralTokenDelta: b.inputTokenAmount } }); return c.err || [200, c.ok];
   }
   async function decrease(b, ip) {
