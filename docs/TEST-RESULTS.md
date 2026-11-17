@@ -1,15 +1,17 @@
-# S1 Test Results (historical baseline; before A.A.I.H. removal)
+> **r118 note:** this is a historical stage report. The A.A.I.H. readiness gate (`src/readiness.js`, `/v1/perps/readiness`) described below was removed in r118.
 
-Historical run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on Node v22.23.4, PostgreSQL 16, before the A.A.I.H. removal patch. These counts are not a test claim for the current patched tree. S1 is an offline stage: **not production-ready**.
+# S1 Test Results (revision 2)
 
-**Historical result: 98/98 passed, 0 skipped, 0 cancelled (pre-removal tree only).**
+Final run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`) on Node v22.23.4, PostgreSQL 16. S1 is an offline stage: **not production-ready**.
+
+**Result: 98/98 passed, 0 skipped, 0 cancelled.**
 
 ## What these results do and do not prove
 - **Real:** SQL, constraints, migrations, advisory locks, retention and candle maths ran against an actual PostgreSQL 16 server. The HTTP and WebSocket tests used real local TCP sockets (`fetch`, `ws`).
 - **Mock:** every Jupiter response (scripted fake), and time (fake clock). **Jupiter was never contacted.**
 - **Not the production driver:** the `pg` npm package cannot be installed in the offline sandbox. Database tests used a psql-backed harness that inlines parameters; the `createPgDb` adapter was tested against fake `Pool`/`Client` classes only.
 - **Not covered:** Render networking/TLS/`X-Forwarded-For`, multi-day soak behaviour, the future frontend integration, dependency CVEs.
-- **Mutation check:** 14 deliberate code breakages (coverage rule off, max-gap rule off, instant jump acceptance, rewritable complete candles, CORS check removed, tick on duplicate slot, no clock guard, status spam, forming-valid, status token check removed, status reachable from a browser origin, /healthz returning detail again, status enabled with no token) were each caught by at least one test. One initial survivor (duplicate-slot tick) led to a strengthened test.
+- **Mutation check:** 14 deliberate code breakages (coverage rule off, max-gap rule off, instant jump acceptance, rewritable complete candles, CORS check removed, readiness always ready, tick on duplicate slot, no clock guard, status spam, forming-valid, status token check removed, status reachable from a browser origin, /healthz returning detail again, status enabled with no token) were each caught by at least one test. One initial survivor (duplicate-slot tick) led to a strengthened test.
 
 ## unit.test.js — 21/21 pass
 **What:** Pure logic: time, candles, validation, Jupiter client, config, limits  
@@ -38,7 +40,7 @@ Historical run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`
 - PASS — limits: sliding window limiter
 
 ## db.test.js — 14/14 pass
-**What:** Schema, constraints, migrations, store SQL, candle runtime, leader lock  
+**What:** Schema, constraints, migrations, store SQL, candle runtime, A.A.I.H. readiness, leader lock  
 **Kind:** REAL PostgreSQL 16 (psql harness, not the `pg` driver)
 
 - PASS — migrations: apply once, idempotent, checksum-protected, all tables present
@@ -50,6 +52,10 @@ Historical run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`
 - PASS — engine: rebuild from observations == independent oracle, for every timeframe; idempotent; complete rows frozen
 - PASS — engine: a hole in the data produces a hole in the candles (no fabrication)
 - PASS — engine: onObservation keeps forming candles current; finalizeDue closes them after bucket end + grace
+- PASS — readiness: 60 contiguous valid hourly candles -> ready; 59 -> insufficient_history (with a labelled estimate)
+- PASS — readiness: one missing hour inside the window blocks readiness until it ages out
+- PASS — readiness: stale newest candle, recorder_down, no_data
+- PASS — readiness: 59 valid + 1 invalid is NOT ready (59/60 is not ready)
 - PASS — leader lock: second session cannot take it; released/killed lock can be re-acquired
 
 ## recorder.test.js — 18/18 pass
@@ -85,6 +91,7 @@ Historical run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`
 - PASS — markets: live / stale / down / no_data; price withheld when down
 - PASS — candles: contract, ordering, completed-only default, includeForming, limit/before, valid flags, no volume field
 - PASS — candles: parameter validation matrix (fuzz)
+- PASS — readiness endpoint: not ready -> ready; labelled estimate; shape
 - PASS — CORS: allowed origin, foreign origin, no origin, preflight; write methods refused
 - PASS — CORS is fail-closed when ALLOWED_ORIGINS is empty
 - PASS — rate limit: per-IP window; spoofed first x-forwarded-for entry cannot dodge it; limits are per route
@@ -140,7 +147,3 @@ Historical run of `npm test` (`node --test --test-concurrency=1 tests/*.test.js`
 
 ## Revision 3
 Added tests/live-fixtures.test.js (6 tests, real price strings as fixtures, MOCK network). Total 98/98.
-
-
-## A.A.I.H. removal patch status
-The readiness module and route-specific tests were removed after this historical run. The patch's own syntax and test results must be recorded separately; do not treat the historical 98/98 result above as verification of the patched tree.
