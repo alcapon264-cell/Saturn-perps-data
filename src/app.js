@@ -11,7 +11,6 @@ import { createCandleEngine } from './engine.js';
 import { createRecorder } from './recorder.js';
 import { createHttpHandler } from './http.js';
 import { createHub } from './ws.js';
-import { computeReadiness } from './readiness.js';
 import { migrate } from './db.js';
 
 export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
@@ -48,7 +47,6 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, isShuttingDown: () => shuttingDown,
     getMarketsView: marketsView,
-    getReadiness: async m => { try { const v = await marketView(m); return await computeReadiness({ store: readStore, cfg, market: m, now, marketState: v.state === 'no_data' ? 'no_data' : v.state }); } catch (e) { if (e && e.dbUnavailable) throw e; const x = new Error('db_unavailable'); x.dbUnavailable = true; throw x; } },
     /* PUBLIC: minimal liveness only. Nothing operational, nothing about markets, queues, thresholds or versions. */
     getHealth: async () => {
       let dbOk = false; try { dbOk = await store.ping(); } catch { dbOk = false; }
@@ -59,7 +57,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
       let dbOk = false; try { dbOk = await store.ping(); } catch { dbOk = false; }
       return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', version: 1, epoch, serverTime: Math.floor(now() / 1000), uptimeSec: Math.floor((now() - startedAt) / 1000), source: SOURCE,
         ready, leader, db: { ok: dbOk }, lastInitError, recorder: recorder.summary(), ws: hub.stats(),
-        thresholds: { intervalSec: cfg.intervalSec, coverageMin: cfg.coverageMin, jumpPct: cfg.jumpPct, jumpConfirm: cfg.jumpConfirm, readinessRequired: cfg.readinessRequired }, metrics: metrics.snapshot() };
+        thresholds: { intervalSec: cfg.intervalSec, coverageMin: cfg.coverageMin, jumpPct: cfg.jumpPct, jumpConfirm: cfg.jumpConfirm }, metrics: metrics.snapshot() };
     }
   });
 

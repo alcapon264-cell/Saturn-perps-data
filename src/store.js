@@ -66,7 +66,7 @@ export function createStore(db) {
       const r = await db.query("SELECT count(*) AS k FROM perps_candles WHERE source=$1 AND market=$2 AND tf=$3 AND status='complete' AND valid", [SOURCE, market, tf]);
       return Number(r.rows[0].k);
     },
-    /* complete candles with bucket_start in [fromMs, toMs] ascending, for readiness */
+    /* complete candles with bucket_start in [fromMs, toMs], returned ascending */
     async completeRange(market, tf, fromMs, toMs) {
       const r = await db.query("SELECT extract(epoch from bucket_start)*1000 AS s, valid FROM perps_candles WHERE source=$1 AND market=$2 AND tf=$3 AND status='complete' AND bucket_start >= to_timestamp($4) AND bucket_start <= to_timestamp($5) ORDER BY bucket_start ASC", [SOURCE, market, tf, ts(fromMs), ts(toMs)]);
       return r.rows.map(x => ({ startMs: Math.round(n(x.s)), valid: !!x.valid }));

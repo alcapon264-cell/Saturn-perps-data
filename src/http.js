@@ -7,7 +7,7 @@ import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, getReadiness, gateway = null, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, isShuttingDown = () => false }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -55,11 +55,10 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
         if (!m || !timingSafeEqual(dig(m[1]), dig(cfg.statusToken))) { metrics?.inc('status_unauthorized'); return err(res, 401, 'unauthorized'); }
         return send(res, 200, await getStatus());
       }
-      const isRead = path === '/v1/perps/markets' || path === '/v1/perps/candles' || path === '/v1/perps/readiness';
+      const isRead = path === '/v1/perps/markets' || path === '/v1/perps/candles';
       if (!isRead) return err(res, 404, 'not_found', cors);
       if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
-      const max = path === '/v1/perps/readiness' ? cfg.http.readinessLimitPerMin : cfg.http.ipLimitPerMin;
-      if (limiter(ip + '|' + path, max)) { metrics?.inc('http_rate_limited'); return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '30' }); }
+      if (limiter(ip + '|' + path, cfg.http.ipLimitPerMin)) { metrics?.inc('http_rate_limited'); return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '30' }); }
 
       if (path === '/v1/perps/markets') {
         const v = await cached('markets', 1000, getMarketsView);
@@ -69,10 +68,6 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       const market = String(q.get('market') || '').toUpperCase();
       if (!MARKET_KEYS.includes(market)) return err(res, 400, 'bad_market', cors);
 
-      if (path === '/v1/perps/readiness') {
-        const v = await cached('ready:' + market, 5000, () => getReadiness(market));
-        return send(res, 200, { ok: true, serverTime: Math.floor(now() / 1000), ...v }, cors);
-      }
 
       /* /v1/perps/candles */
       const tf = q.get('tf');

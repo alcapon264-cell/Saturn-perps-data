@@ -51,9 +51,8 @@ export function loadConfig(env = process.env) {
     jumpConfirm: Math.round(num(env.JUMP_CONFIRM, 3, { min: 2, max: 10 })),
     confirmTolPct: num(env.CONFIRM_TOL_PCT, 5, { min: 0.1, max: 20 }),
     maxPrice: 1e9,
-    readinessRequired: 60,
     retention: { observationsDays: num(env.RETAIN_OBS_DAYS, 35, { min: 8 }), logDays: num(env.RETAIN_LOG_DAYS, 7, { min: 1 }) },
-    http: { ipLimitPerMin: num(env.HTTP_LIMIT_PER_MIN, 60, { min: 1 }), readinessLimitPerMin: num(env.READINESS_LIMIT_PER_MIN, 10, { min: 1 }), trustedProxyHops: Math.round(num(env.TRUSTED_PROXY_HOPS, 1, { min: 0, max: 5 })) },
+    http: { ipLimitPerMin: num(env.HTTP_LIMIT_PER_MIN, 60, { min: 1 }), trustedProxyHops: Math.round(num(env.TRUSTED_PROXY_HOPS, 1, { min: 0, max: 5 })) },
     ws: { maxConnPerIp: num(env.WS_MAX_CONN_PER_IP, 20, { min: 1 }), maxMarkets: 3, maxMsgPerWindow: 30, windowMs: 10000, maxPayload: 1024, heartbeatMs: 25000, softBuffer: 256 * 1024, hardBuffer: 1024 * 1024 },
     /* Optional Jupiter API key. The header NAME is deliberately not assumed: set both vars from Jupiter's docs, or neither. */
     jupiterKeyHeader: env.JUPITER_API_KEY_HEADER || '', jupiterKey: env.JUPITER_API_KEY || '',
