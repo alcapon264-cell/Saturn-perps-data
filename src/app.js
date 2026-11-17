@@ -1,7 +1,7 @@
 /* Wiring. Everything environment-specific is injected so the whole service runs offline in tests. */
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { MARKET_KEYS, MARKETS, SOURCE } from './config.js';
+import { MARKET_KEYS, MARKETS, MARKET_META, SOURCE } from './config.js';
 import { createMetrics } from './metrics.js';
 import { createLimiter, clientIp } from './limits.js';
 import { createStore } from './store.js';
@@ -60,7 +60,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   }
   /* r118: the market list is the single source of truth for the app: every market configured here appears automatically.
    * executable = a Jupiter Perps custody account exists for it (perps-program.js CUSTODY); otherwise it is view-only. */
-  const marketsView = async () => Promise.all(MARKET_KEYS.map(async m => ({ ...(await marketView(m)), symbol: m + '-PERP', mint: MARKETS[m], executable: !!CUSTODY[m], stats24h: await stats24h(m), volume24h: null, openInterest: null })));
+  const marketsView = async () => Promise.all(MARKET_KEYS.map(async m => ({ ...(await marketView(m)), symbol: m + '-PERP', mint: MARKETS[m], name: (MARKET_META[m] || {}).name || null, category: (MARKET_META[m] || {}).category || null, maxLeverage: (MARKET_META[m] || {}).maxLeverage || null, executable: !!CUSTODY[m], stats24h: await stats24h(m), volume24h: null, openInterest: null })));
 
   const limiter = createLimiter({ now });
   /* Perps gateway: positions via Jupiter, live price from this service's own recorder, execution routes off unless explicitly enabled. Writes (idempotency rows) use the primary role. */

@@ -10,6 +10,15 @@ export const MARKETS = Object.freeze({
   BTC: '3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh'
 });
 export const MARKET_KEYS = Object.freeze(Object.keys(MARKETS));
+/* r119 market metadata, one entry per market this service actually records and the venue lists.
+   category: 'major' (crypto majors) or 'stock' (tracks a share price). maxLeverage is SATURN's limit for the market (the venue may allow more).
+   To add a market: add its mint to MARKETS (so the recorder prices it) and an entry here; it then appears in the app automatically.
+   It is only tradeable when its execution metadata exists in src/perps-program.js (CUSTODY). */
+export const MARKET_META = Object.freeze({
+  SOL: Object.freeze({ name: 'Solana', category: 'major', maxLeverage: 20 }),
+  ETH: Object.freeze({ name: 'Ethereum', category: 'major', maxLeverage: 20 }),
+  BTC: Object.freeze({ name: 'Bitcoin', category: 'major', maxLeverage: 20 })
+});
 
 /* Magnitude guard (S2 finding). Deliberately wide (about 100x either way around the prices seen live on 2026-11-16: SOL 70.8, ETH 1,807, BTC 64,423).
  * It exists to stop a unit/scale change (e.g. an x1e6 or x1e-6 price) from being accepted as the first observation, before the jump filter has a baseline.
