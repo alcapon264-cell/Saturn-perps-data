@@ -49,11 +49,18 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
   const store = createStore(db, { tableSet: 'view', source: VIEW_SOURCE });
   const readStore = createStore(readerDb || db, { tableSet: 'view', source: VIEW_SOURCE });
   const hl = createHyperliquidClient({ fetchImpl, base: V ? V.hyperliquidBase : undefined, timeoutMs: cfg.timeoutMs });
-  const cg = V && V.coingeckoKey ? createCoinGeckoClient({ fetchImpl, key: V.coingeckoKey, timeoutMs: cfg.timeoutMs }) : null;
-  const BUNDLED = bundledLogos || loadBundledLogos([...MARKET_KEYS, ...Object.keys(VIEW_MARKET_TABLE)]);
+  /* r125: CoinGecko is optional. With a key: price cross-check every 5 min. Without: the public endpoint only verifies coin identity and supplies logos (every 6 h),
+   * and every market's price is checked against its own Hyperliquid oracle price. Nothing on Render is required for the catalogue to work. */
+  const keyed = !!(V && V.coingeckoKey);
+  const cg = V ? createCoinGeckoClient({ fetchImpl, key: V.coingeckoKey || '', timeoutMs: cfg.timeoutMs }) : null;
+  const CHK = m => T(m).check === 'coingecko' && keyed ? 'coingecko' : 'oracle';
+  const CG_EVERY = () => keyed ? V.crossCheckMs : 6 * 3600 * 1000;
+  const LOGO_KEYS = [...MARKET_KEYS, ...Object.keys(VIEW_MARKET_TABLE)];
+  /* r124: the manifest may live in assets/official-logos/ or assets/logos/; either way only DECLARED, hash-matching files are served */
+  const BUNDLED = bundledLogos || new Map([...loadBundledLogos(LOGO_KEYS, new URL('../assets/logos/', import.meta.url)), ...loadBundledLogos(LOGO_KEYS)]);
 
   /* per-market verification + quality (memory on the leader, mirrored to perps_meta for API-only instances) */
-  const Q = Object.fromEntries(KEYS.map(m => [m, { listed: null, listedReason: 'not_checked', coin: null, idOk: T(m).check === 'coingecko' ? null : true, idReason: T(m).check === 'coingecko' ? (cg ? 'not_checked' : 'cross_check_not_configured') : null,
+  const Q = Object.fromEntries(KEYS.map(m => [m, { listed: null, listedReason: 'not_checked', coin: null, idOk: T(m).check === 'coingecko' ? null : true, idReason: null,
     checkAt: null, diffPct: null, mismatch: false, logoUrl: null, ctx: null }]));
   const coreLogo = {};
   let lastMids = null, midsInflight = null, lastCtxAt = 0, lastCheckAt = 0, leader = false;
@@ -89,7 +96,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
         q.listed = !!c && !c.delisted; q.listedReason = !c ? 'not_listed_on_hyperliquid' : c.delisted ? 'delisted_on_hyperliquid' : null;
         q.coin = q.listed ? name : null; q.ctx = c ? { oraclePx: c.oraclePx, prevDayPx: c.prevDayPx, midPx: c.midPx, at: now() } : null;
         if (q.listed) await upsertMarket(m, name).catch(e => log('view: market row failed', m, e && e.message));
-        if (q.listed && T(m).check === 'oracle') oracleCheck(m, c);
+        if (q.listed && CHK(m) === 'oracle') oracleCheck(m, c);
       }
     }
   }
@@ -125,8 +132,9 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
       if (row.symbol !== d.cgSymbol || row.name !== d.cgName) { q.idOk = false; q.idReason = 'coingecko_id_mismatch'; metrics?.inc('view_id_mismatch'); continue; }
       q.idOk = true; q.idReason = null;
       if (logoUrlAllowed(row.image)) q.logoUrl = row.image;
+      if (!keyed) continue;   /* public endpoint: identity + logo only; the price check is the oracle check */
       const hp = hm && q.coin && typeof hm[q.coin] === 'string' ? Number(hm[q.coin]) : NaN;
-      const fresh = row.updatedMs != null && now() - row.updatedMs <= 30 * 60 * 1000;
+      const fresh = row.updatedMs != null && now() - row.updatedMs <= 30 * 60 * 1000 && row.updatedMs <= now() + 2 * 60 * 1000;   /* r124: a timestamp from the future is not trusted either */
       if (!(row.price > 0) || !(hp > 0) || !fresh) { metrics?.inc('view_crosscheck_inconclusive'); continue; }   /* inconclusive: checkAt not advanced, so it expires */
       q.diffPct = +(Math.abs(hp - row.price) / row.price * 100).toFixed(3); q.mismatch = q.diffPct > V.mismatchPct; q.checkAt = now();
       if (q.mismatch) { metrics?.inc('view_crosscheck_mismatch'); log('view: cross-check mismatch', m, 'diffPct=' + q.diffPct); }
@@ -135,11 +143,11 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
   }
 
   /* ---- what may be shown ---- */
-  const verified = (q) => !!q && q.listed === true && q.idOk === true;
+  const verified = (q) => !!q && q.listed === true && q.idOk !== false;
   function quality(m, q, summary, t = now()) {
     if (!q) return { ok: false, reason: 'not_checked' };
     if (q.listed !== true) return { ok: false, reason: q.listedReason || 'not_checked' };
-    if (q.idOk !== true) return { ok: false, reason: q.idReason || 'not_checked' };
+    if (q.idOk === false || (CHK(m) === 'coingecko' && q.idOk !== true)) return { ok: false, reason: q.idReason || 'not_checked' };
     if (q.checkAt == null || t - q.checkAt > V.crossCheckMaxAgeMs) return { ok: false, reason: 'not_cross_checked' };
     if (q.mismatch) return { ok: false, reason: 'sources_disagree' };
     const s = summary && summary.markets && summary.markets[m];
@@ -147,7 +155,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     return { ok: true, reason: null };
   }
   /* recording pauses while unlisted, while the id is wrong or unchecked, or while sources disagree, so a wrong feed never reaches the candles */
-  const gate = m => { const q = Q[m]; return !!q && q.listed === true && !!q.coin && (T(m).check === 'oracle' || (!!cg && q.idOk !== false)) && !q.mismatch; };
+  const gate = m => { const q = Q[m]; return !!q && q.listed === true && !!q.coin && q.idOk !== false && !q.mismatch; };
 
   const engine = createCandleEngine({ store, cfg, now, metrics, onCandle: (m, k) => hub && hub.publishCandle(m, k), sourceTag: VIEW_SOURCE });
   const priceRange = Object.fromEntries(KEYS.map(m => [m, T(m).range]));
@@ -221,7 +229,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
         status: show ? 'ok' : (qual.reason || (last ? 'stale' : 'no_data')),
         symbol: m + '-PERP', mint: null, name: T(m).name, category: T(m).category, maxLeverage: null, executable: false, viewOnly: true,
         source: VIEW_SOURCE, venue: T(m).dex ? 'hyperliquid:' + T(m).dex : 'hyperliquid', venueCoin: q && q.coin || null,
-        crossCheck: { source: T(m).check === 'oracle' ? 'hyperliquid-oracle' : 'coingecko', ok: qual.ok, reason: qual.reason, diffPct: q && q.diffPct != null ? q.diffPct : null, checkedAt: q && q.checkAt ? Math.floor(q.checkAt / 1000) : null },
+        crossCheck: { source: CHK(m) === 'oracle' ? 'hyperliquid-oracle' : 'coingecko', ok: qual.ok, reason: qual.reason, diffPct: q && q.diffPct != null ? q.diffPct : null, checkedAt: q && q.checkAt ? Math.floor(q.checkAt / 1000) : null },
         history: hist, stats24h: s24, change24h: show && !s24 ? sourceChange(q, last.price) : null, volume24h: null, openInterest: null
       });
     }
@@ -252,7 +260,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
   async function startLeader() {
     if (!enabled) return;
     leader = true;
-    if (!cg && KEYS.some(m => T(m).check === 'coingecko')) log('view: COINGECKO_DEMO_KEY missing; crypto view markets are listed as "Price unavailable"');
+    log('view: markets ' + KEYS.join(',') + '; price check: ' + (keyed ? 'CoinGecko (crypto) + oracle (stocks)' : 'Hyperliquid oracle (no CoinGecko key)'));
     await readContexts().catch(e => log('view: contexts failed', e && e.message));
     await crossCheck().catch(e => log('view: cross-check failed', e && e.message));
     for (const m of KEYS) if (Q[m].listed) await engine.recover(m).catch(() => {});
@@ -264,7 +272,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     if (!leader) return;
     const t = now();
     if (t - lastCtxAt >= V.ctxMs) await readContexts().catch(() => {});
-    if (cg && t - lastCheckAt >= V.crossCheckMs) await crossCheck().catch(() => {});
+    if (cg && t - lastCheckAt >= CG_EVERY()) await crossCheck().catch(() => {});
     for (const m of KEYS) { await engine.finalizeDue(m); recorder.checkState(m); }
     await saveState().catch(() => {});
   }

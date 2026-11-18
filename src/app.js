@@ -14,6 +14,7 @@ import { createHttpHandler } from './http.js';
 import { createHub } from './ws.js';
 import { migrate } from './db.js';
 import { createViewMarkets } from './view.js';
+import { toContract } from './markets.js';
 
 export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
   const metrics = createMetrics();
@@ -77,7 +78,8 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const gateway = cfg.gateway ? createGateway({ cfg, store, upstream: gwUpstream, limiter, now, metrics, getLivePrice: marketView }) : null;
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, isShuttingDown: () => shuttingDown,
-    getMarketsView: async () => [...(await marketsView()), ...(await view.marketsView().catch(() => []))],
+    /* r124: one contract for all 11 markets (src/markets.js) */
+    getMarketsView: async () => [...(await marketsView()), ...(await view.marketsView().catch(() => []))].map(toContract).filter(Boolean),
     view,
     /* PUBLIC: minimal liveness only. Nothing operational, nothing about markets, queues, thresholds or versions. */
     getHealth: async () => {

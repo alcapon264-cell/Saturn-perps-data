@@ -79,14 +79,14 @@ export function createHyperliquidClient({ fetchImpl = globalThis.fetch, base = H
 
 export function createCoinGeckoClient({ fetchImpl = globalThis.fetch, base = CG_BASE, key = '', keyHeader = 'x-cg-demo-api-key', timeoutMs = 8000 } = {}) {
   const u = new URL(base); if (u.protocol !== 'https:' || u.hostname !== CG_HOST) throw new Error('coingecko_base_not_allowed');
-  if (!key) throw new Error('coingecko_key_required');
+  /* r125: the key is optional. Without it the PUBLIC endpoint is used (identity check + logos only, a few calls a day). */
   return Object.freeze({
     /* ONE request for all ids. -> {ok:true, rows: Map(id -> {id, symbol, name, image, price, updatedMs})} */
     async markets(ids) {
       const list = [...new Set(ids)].filter(x => /^[a-z0-9-]{2,64}$/.test(x)).slice(0, 50);
       if (!list.length) return { ok: false, outcome: 'malformed', detail: 'no_ids' };
       const url = base + '/coins/markets?vs_currency=usd&ids=' + encodeURIComponent(list.join(',')) + '&per_page=50&page=1&sparkline=false';
-      const r = await bounded(fetchImpl, url, { method: 'GET', headers: { accept: 'application/json', [keyHeader]: key } }, { timeoutMs, maxBody: 512 * 1024 });
+      const r = await bounded(fetchImpl, url, { method: 'GET', headers: key ? { accept: 'application/json', [keyHeader]: key } : { accept: 'application/json' } }, { timeoutMs, maxBody: 512 * 1024 });
       if (!r.ok) return r;
       if (!Array.isArray(r.json)) return { ok: false, outcome: 'malformed', detail: 'not_array' };
       const rows = new Map();

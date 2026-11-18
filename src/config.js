@@ -47,6 +47,7 @@ export const VIEW_MARKET_TABLE = Object.freeze({
   BNB:     Object.freeze({ name: 'BNB', dex: '', venueCoins: ['BNB'], check: 'coingecko', coingeckoId: 'binancecoin', cgSymbol: 'bnb', cgName: 'BNB', category: 'major', range: [1, 10000000] })
 });
 export const VIEW_KEYS_ALL = Object.freeze(Object.keys(VIEW_MARKET_TABLE));
+function viewList(v) { const t = String(v == null ? '' : v).trim(); if (t === '') return [...VIEW_KEYS_ALL]; if (/^(off|none|false|0)$/i.test(t)) return []; return t.split(',').map(x => x.trim().toUpperCase()).filter(Boolean); }
 
 export const JUPITER_HOST = 'perps-api.jup.ag';
 export const JUPITER_BASE = 'https://perps-api.jup.ag/v1';
@@ -87,8 +88,9 @@ export function loadConfig(env = process.env) {
     maxPrice: 1e9,
     /* r121 view-only markets. Off unless VIEW_MARKETS lists them. Crypto markets need COINGECKO_DEMO_KEY for their cross-check; without it they stay listed as 'Price unavailable'. */
     view: Object.freeze({
-      markets: Object.freeze(list(env.VIEW_MARKETS).map(x => x.toUpperCase()).filter((x, i, a) => VIEW_KEYS_ALL.includes(x) && a.indexOf(x) === i)),
-      unknownMarkets: Object.freeze(list(env.VIEW_MARKETS).map(x => x.toUpperCase()).filter(x => !VIEW_KEYS_ALL.includes(x))),
+      /* r125: the catalogue needs NO Render setting. VIEW_MARKETS unset/empty = all eight; 'off' = none; a list = that subset (unknown names are a config error). */
+      markets: Object.freeze(viewList(env.VIEW_MARKETS).filter((x, i, a) => VIEW_KEYS_ALL.includes(x) && a.indexOf(x) === i)),
+      unknownMarkets: Object.freeze(viewList(env.VIEW_MARKETS).filter(x => !VIEW_KEYS_ALL.includes(x))),
       coingeckoKey: env.COINGECKO_DEMO_KEY || '',
       hyperliquidBase: env.HYPERLIQUID_INFO_BASE || 'https://api.hyperliquid.xyz',
       crossCheckMs: 5 * 60 * 1000,                       /* one CoinGecko request per 5 minutes at most */

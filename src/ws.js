@@ -1,6 +1,7 @@
 /* Separate Perps WebSocket hub (path /perps/live on this service only). It never touches the spot WebSocket.
  * Messages are broadcast only when a NEW valid observation (or a state change) occurs. */
 import { MARKET_KEYS, SOURCE } from './config.js';
+import { REGISTRY } from './markets.js';
 import { isTf, TFS } from './time.js';
 
 export function createHub({ cfg, now = Date.now, metrics, snapshot, epoch, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, extraMarkets = async () => [], sourceFor = () => SOURCE }) {
@@ -61,7 +62,7 @@ export function createHub({ cfg, now = Date.now, metrics, snapshot, epoch, setIn
   const eachSub = (market, fn) => { for (const c of clients) if (!c.closed && c.markets.has(market)) fn(c); };
   return Object.freeze({
     attach,
-    publishTick(t) { eachSub(t.market, c => raw(c, { type: 'perps_tick', market: t.market, price: t.price, observedAt: t.observedAt, seq: t.seq, source: sourceFor(t.market), ...(t.persisted === false ? { persisted: false } : {}) }, { droppable: true })); },
+    publishTick(t) { eachSub(t.market, c => raw(c, { type: 'perps_tick', market: t.market, price: t.price, observedAt: t.observedAt, seq: t.seq, source: sourceFor(t.market), provider: REGISTRY[t.market] ? REGISTRY[t.market].provider : null, ...(t.persisted === false ? { persisted: false } : {}) }, { droppable: true })); },
     publishCandle(market, k) {
       const final = k.status === 'complete';
       eachSub(market, c => { if (!c.tfs.has(k.tf)) return; raw(c, { type: 'perps_candle', market, tf: k.tf, final, candle: { t: Math.floor(k.startMs / 1000), o: k.o, h: k.h, l: k.l, c: k.c, n: k.n, status: k.status, ...(final ? { valid: k.valid } : {}) } }, { droppable: !final }); });
