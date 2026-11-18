@@ -240,15 +240,15 @@ test('request mapping: long/short collateral mint, input amount stays in INPUT t
   } finally { await e.drop(); }
 });
 
-test('code lock: environment flags alone cannot enable execution while the Jupiter contract is unverified', opts, async () => {
-  assert.equal(EXECUTE_CONTRACT_VERIFIED, false, 'the shipped build keeps the execution contract unverified');
+test('r130 code switch approved ON: without the Render settings (PERPS_EXECUTION_ENABLED + ticket secret) execution stays disabled', opts, async () => {
+  assert.equal(EXECUTE_CONTRACT_VERIFIED, true, 'owner approved real-money activation');
   const jup = gwJupiter();
-  const e = await makeEnv({ jup, env: { RECORDER_ENABLED: '0', PERPS_EXECUTION_ENABLED: '1', GATEWAY_TICKET_SECRET: TKT }, init: false });
+  const e = await makeEnv({ jup, env: { RECORDER_ENABLED: '0' }, init: false });
   const port = await e.app.start({ port: 0, host: '127.0.0.1' });
   try {
     for (const p of ['/v1/perps/jup/positions/increase', '/v1/perps/jup/positions/decrease', '/v1/perps/jup/execute']) {
       const r = await (await fetch('http://127.0.0.1:' + port + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(incBody()) })).json();
-      assert.equal(r.error, 'execution_contract_unverified', p); assert.ok(Array.isArray(r.blockers) && r.blockers.length >= 3);
+      assert.equal(r.error, 'execution_disabled', p);
     }
     assert.equal(jup.g.calls.length, 0);
   } finally { await e.drop(); }

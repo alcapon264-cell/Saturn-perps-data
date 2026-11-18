@@ -32,7 +32,7 @@ test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the
   assert.deepEqual([...new Set([...hx.matchAll(/arb\('(eth_\w+)'/g)].map(m => m[1]))].sort(), ['eth_call', 'eth_getBalance', 'eth_getTransactionReceipt']);
   assert.ok(!/eth_send(Raw)?Transaction/.test(hx));
   assert.ok(!/signL1Action|signDigest|newPrivateKey|signUserSignedAction|hyperliquid-testnet/.test(hx), 'the relay never signs and never targets testnet');
-  assert.match(hx, /export const HL_EXECUTE_VERIFIED = false;/, 'real-money switch in code stays off until approved');
+  assert.match(hx, /export const HL_EXECUTE_VERIFIED = (true|false);/, 'real-money switch in code is an explicit constant (r130: owner approved true)');
   assert.equal(createHash('sha256').update(readFileSync(path.join(root, 'src/vendor/hlsign.mjs'))).digest('hex'), '572220e3e1d3c6a8445dbc9f0c3c3b608b4aefff3b3390fddd65bf4576c0b6c6', 'vendored Hyperliquid crypto is byte-pinned');
   assert.deepEqual(Object.entries(prod).filter(([f, t]) => /vendor\/hlsign/.test(t)).map(([f]) => f), ['src/hl-exec.js'], 'only the relay imports the vendored crypto');
   const vs = prod['src/viewsources.js'];

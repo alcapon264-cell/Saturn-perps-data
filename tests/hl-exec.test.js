@@ -68,10 +68,12 @@ async function setup(t, { env = {}, enabled = true, hl = {} } = {}) {
   return { e, F, gw, call, rows, now: () => e.clock.now() };
 }
 
-test('production switches: code constant is false, so env alone can never enable real money', () => {
-  assert.equal(HL_EXECUTE_VERIFIED, false);
+test('production switches (r130: code switch approved ON): real money needs HL_EXECUTION_ENABLED=1 too; unset env = off', () => {
+  assert.equal(HL_EXECUTE_VERIFIED, true);
+  const off = loadConfig({ DATABASE_URL: 'postgres://x@y/z', ALLOWED_ORIGINS: 'https://a.b' });
+  assert.equal(off.hl.enabled, false, 'without the Render setting nothing can trade');
   const c = loadConfig({ DATABASE_URL: 'postgres://x@y/z', ALLOWED_ORIGINS: 'https://a.b', HL_EXECUTION_ENABLED: '1', HL_VERIFIED_MARKETS: 'HYPE,ZEC,SOL,NOPE' });
-  assert.equal(c.hl.requested, true); assert.equal(c.hl.enabled, false);
+  assert.equal(c.hl.requested, true); assert.equal(c.hl.enabled, true);
   assert.deepEqual(c.hl.verifiedMarkets, ['HYPE', 'ZEC'], 'only the 8 Hyperliquid markets can be listed (SOL / unknown dropped)');
   assert.equal(hlConfig({}).maxOrderUsd, 50); assert.equal(hlConfig({ HL_MAX_ORDER_USD: '999999999' }).maxOrderUsd, 50, 'out-of-range limit ignored');
 });

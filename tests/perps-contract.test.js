@@ -68,7 +68,7 @@ test('Jupiter Side enum encoding and Borsh field order match the published IDL',
   });
 });
 
-test('execution remains locked pending live Jupiter transaction verification', () => {
-  assert.equal(EXECUTE_CONTRACT_VERIFIED, false);
+test('r130: owner approved the code switch; the open blockers stay documented', () => {
+  assert.equal(EXECUTE_CONTRACT_VERIFIED, true);
   assert.ok(CONTRACT_BLOCKERS.length >= 2);
 });
