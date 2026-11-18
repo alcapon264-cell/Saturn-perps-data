@@ -12,6 +12,7 @@
  *   4. the recorder's price is live/stale and not frozen.
  * Otherwise price is null and `status` says why ('Price unavailable' in the app). Nothing is estimated. */
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { VIEW_MARKET_TABLE, VIEW_SOURCE, MARKET_KEYS } from './config.js';
 import { createStore } from './store.js';
 import { createCandleEngine } from './engine.js';
@@ -21,14 +22,21 @@ import { createHyperliquidClient, createCoinGeckoClient, fetchLogo, logoUrlAllow
 const CORE_CG = Object.freeze({ SOL: { id: 'solana', symbol: 'sol', name: 'Solana' }, ETH: { id: 'ethereum', symbol: 'eth', name: 'Ethereum' }, BTC: { id: 'bitcoin', symbol: 'btc', name: 'Bitcoin' } });
 const STATE_KEY = 'view_state_v2';
 
-/* Logo files shipped with the service (assets/logos/<KEY>.png). Read once at start; PNG/JPEG/WEBP/GIF only (magic bytes), <= 256 KB. */
-export function loadBundledLogos(keys, dir = new URL('../assets/logos/', import.meta.url)) {
+/* r123 logo policy: a logo file shipped with the service is served ONLY if it is declared in assets/official-logos/SOURCES.json
+ * with the official page it was downloaded from and its sha256, and the file matches that hash. Undeclared files (for example the
+ * R121 screenshot cut-outs in assets/logos/) are never read. Without a declared file, the verified remote image is used
+ * (CoinGecko image of the verified id; for SOL/ETH/BTC also the Jupiter token icon), otherwise no logo (the app shows a plain disc). */
+export function loadBundledLogos(keys, dir = new URL('../assets/official-logos/', import.meta.url)) {
   const out = new Map();
-  for (const k of keys) {
-    if (!/^[A-Z0-9]{2,12}$/.test(k)) continue;
-    const f = new URL(k + '.png', dir); if (!existsSync(f)) continue;
+  let list = [];
+  try { const j = JSON.parse(readFileSync(new URL('SOURCES.json', dir), 'utf8')); list = Array.isArray(j) ? j : []; } catch { return out; }
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || !keys.includes(e.market) || !/^[A-Z0-9]{2,12}$/.test(e.market)) continue;
+    if (typeof e.source !== 'string' || !/^https:\/\/[^\s]+$/.test(e.source) || typeof e.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(e.sha256)) continue;
+    const f = new URL(e.market + '.png', dir); if (!existsSync(f)) continue;
     const b = new Uint8Array(readFileSync(f)); const type = sniffImage(b);
-    if (type && b.length <= 256 * 1024) out.set(k, { bytes: b, type, bundled: true });
+    if (!type || b.length > 256 * 1024 || createHash('sha256').update(b).digest('hex') !== e.sha256) continue;
+    out.set(e.market, { bytes: b, type, bundled: true, source: e.source });
   }
   return out;
 }

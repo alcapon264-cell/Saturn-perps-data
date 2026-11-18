@@ -87,7 +87,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     /* PROTECTED (bearer token, disabled when STATUS_TOKEN is unset): the detailed operational view. */
     getStatus: async () => {
       let dbOk = false; try { dbOk = await store.ping(); } catch { dbOk = false; }
-      return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', version: 1, epoch, serverTime: Math.floor(now() / 1000), uptimeSec: Math.floor((now() - startedAt) / 1000), source: SOURCE,
+      return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', version: 1, commit: cfg.buildCommit || null, epoch, serverTime: Math.floor(now() / 1000), uptimeSec: Math.floor((now() - startedAt) / 1000), source: SOURCE,
         ready, leader, db: { ok: dbOk }, lastInitError, recorder: recorder.summary(), view: { enabled: view.enabled, markets: view.KEYS, verification: view.Q, recorder: view.recorder.summary() }, ws: hub.stats(),
         thresholds: { intervalSec: cfg.intervalSec, coverageMin: cfg.coverageMin, jumpPct: cfg.jumpPct, jumpConfirm: cfg.jumpConfirm }, metrics: metrics.snapshot() };
     }

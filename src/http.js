@@ -74,7 +74,7 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
 
       if (path === '/v1/perps/markets') {
         const v = await cached('markets', 1000, getMarketsView);
-        return send(res, 200, { ok: true, source: SOURCE, timeBasis: 'receive_time', serverTime: Math.floor(now() / 1000), markets: v, ...(v.some(x => x.viewOnly) ? { attribution: { viewOnlyPrices: 'Hyperliquid', crossCheck: 'CoinGecko', text: 'View-only prices from Hyperliquid · checked with CoinGecko' } } : {}) }, cors);
+        return send(res, 200, { ok: true, source: SOURCE, timeBasis: 'receive_time', serverTime: Math.floor(now() / 1000), markets: v, build: { commit: cfg.buildCommit || null, viewMarketsConfigured: !!(cfg.view && cfg.view.markets.length), crossCheckConfigured: !!(cfg.view && cfg.view.coingeckoKey) }, ...(v.some(x => x.viewOnly) ? { attribution: { viewOnlyPrices: 'Hyperliquid', crossCheck: 'CoinGecko', text: 'View-only prices from Hyperliquid · checked with CoinGecko' } } : {}) }, cors);
       }
 
       const market = String(q.get('market') || '').toUpperCase();

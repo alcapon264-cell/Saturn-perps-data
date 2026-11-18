@@ -67,6 +67,8 @@ export function loadConfig(env = process.env) {
   }
   return Object.freeze({
     priceRange,
+    /* r122 deploy audit: the commit Render built (Render sets RENDER_GIT_COMMIT automatically). Public repo hash only; nothing secret. */
+    buildCommit: /^[0-9a-f]{7,40}$/.test(String(env.RENDER_GIT_COMMIT || '')) ? String(env.RENDER_GIT_COMMIT).slice(0, 12) : null,
     recorderEnabled: !/^(0|false|off|no)$/i.test(String(env.RECORDER_ENABLED || '1')), /* false = API/WS-only instance that never takes the single-writer lock */
     statusToken: env.STATUS_TOKEN || '', /* protects GET /internal/status; empty = that endpoint does not exist */
     port: num(env.PORT, 8080, { min: 1, max: 65535 }),
