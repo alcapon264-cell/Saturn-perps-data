@@ -141,3 +141,29 @@ test('WebSocket isolation: a client gets ticks only for markets it subscribed to
     a.ws.close(); b.ws.close();
   } finally { await e.drop(); }
 });
+
+test('r126 24 h change for SOL/ETH/BTC with GAPPY history (free plan sleeps): computed from two REAL observations 24 h apart; never another market\'s; dash when none within 30 min', opts, async () => {
+  const e = await boot(); try {
+    await cycle(e); await cycle(e);
+    const now = e.clock.now(), ins = (m, t, p) => e.db.sql(`INSERT INTO perps_observations(source,market,slot_ts,observed_at,price,fetch_ms) VALUES ('jupiter-perps:market-stats','${m}',to_timestamp(${t / 1000}),to_timestamp(${t / 1000}),${p},10)`);
+    await ins('SOL', now - 24 * 3600e3 - 7 * 60e3, 140);          /* 7 min from exactly 24 h ago -> accepted */
+    await ins('SOL', now - 24 * 3600e3 + 40 * 60e3, 999);         /* 40 min away -> never used */
+    await ins('ETH', now - 24 * 3600e3 - 50 * 60e3, 2500);        /* ETH: only 50 min away -> no reference */
+    await ins('ETH', now - 24 * 3600e3 + 2 * 60e3, 100);          /* ETH at 2 min -> ETH's reference */
+    await ins('BTC', now - 30 * 3600e3, 80000);                   /* BTC: nothing near 24 h ago */
+    const by = Object.fromEntries((await markets(e)).map(r => [r.market, r]));
+    const sol = by.SOL.stats24h; assert.equal(sol.basis, 'saturn_observation_24h'); assert.equal(sol.open, 140); assert.equal(sol.changePct, +((150 - 140) / 140 * 100).toFixed(4)); assert.equal(sol.high, null); assert.equal(sol.low, null);
+    assert.equal(by.ETH.stats24h.open, 100, 'ETH uses ETH\'s own observation closest to 24 h ago');
+    assert.equal(by.BTC.stats24h, null, 'BTC: no real observation within 30 min of 24 h ago -> dash, nothing estimated');
+  } finally { await e.drop(); }
+});
+
+test('r126 24 h stats with a FULL hourly history keep the candle-based high/low/change (unchanged behaviour)', opts, async () => {
+  const e = await boot(); try {
+    const t0 = e.clock.now();
+    await e.db.sql(`INSERT INTO perps_observations(source,market,slot_ts,observed_at,price,fetch_ms) SELECT 'jupiter-perps:market-stats','SOL', to_timestamp(g), to_timestamp(g + 0.25), 150 + ((g/15)::bigint % 7) * 0.1, 10 FROM generate_series(${t0 / 1000 - 25 * 3600}, ${t0 / 1000}, 15) g`);
+    await e.parts.engine.recover('SOL'); await e.parts.engine.finalizeDue('SOL');
+    const sol = (await markets(e)).find(r => r.market === 'SOL').stats24h;
+    assert.equal(sol.basis, 'saturn_sampled_1h'); assert.ok(sol.high >= sol.low && sol.hours >= 20);
+  } finally { await e.drop(); }
+});

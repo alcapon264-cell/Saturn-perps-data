@@ -113,7 +113,7 @@ test('/v1/perps/markets: all 11 markets, view markets executable:false with null
     for (const x of r.markets.filter(x => x.viewOnly)) {
       assert.equal(x.executable, false); assert.equal(x.maxLeverage, null); assert.equal(x.volume24h, null); assert.equal(x.openInterest, null); assert.equal(x.mint, null);
       assert.equal(x.source, 'hyperliquid:allMids'); assert.equal(x.crossCheck.ok, true, x.market + ' ' + JSON.stringify(x.crossCheck)); assert.ok(x.price > 0, x.market); assert.equal(x.status, 'ok');
-      assert.equal(x.icon, STOCKS.includes(x.market) ? null : '/v1/perps/logos/' + x.market, 'crypto: verified CoinGecko image; stocks: no official file declared -> honest missing logo'); assert.equal(x.stats24h, null);
+      assert.equal(x.icon, '/v1/perps/logos/' + x.market, 'r126: every market has a declared official logo file in assets/logos'); assert.equal(x.stats24h, null);
     }
     const by = Object.fromEntries(r.markets.map(x => [x.market, x]));
     assert.equal(by.HYPE.price, 31.5); assert.equal(by.SNDK.price, 655.5); assert.equal(by.SKHYNIX.venueCoin, 'xyz:SKHYNIX');
@@ -154,7 +154,7 @@ test('honest status: a coin missing or delisted on Hyperliquid, or a wrong CoinG
     assert.deepEqual(Object.keys(by), ALL, 'every requested market is still listed');
     assert.deepEqual([by.ZEC.status, by.NEAR.status, by.JUP.status, by.SKHYNIX.status], ['not_listed_on_hyperliquid', 'delisted_on_hyperliquid', 'coingecko_id_mismatch', 'not_listed_on_hyperliquid']);
     for (const k of ['ZEC', 'NEAR', 'JUP', 'SKHYNIX']) { assert.equal(by[k].price, null, k); assert.equal(by[k].state, 'unavailable'); assert.equal(by[k].change24h, null); assert.equal(by[k].name, VIEW_MARKET_TABLE[k].name, 'identity kept'); }
-    assert.equal(by.JUP.icon, null, 'a coin whose CoinGecko id is wrong never gets that id\'s image');
+    assert.equal(by.JUP.icon, '/v1/perps/logos/JUP', 'the declared official JUP file is used; a wrong CoinGecko id never supplies an image');
     assert.ok(by.HYPE.price > 0 && by.SNDK.price > 0);
     const rec = (await e.db.rows('SELECT DISTINCT market FROM perps_view_observations ORDER BY 1')).map(r => r.market); assert.deepEqual(rec, ['BNB', 'HYPE', 'SNDK', 'SPCX'], 'unavailable markets are not recorded');
     assert.deepEqual(await e.view.visibleKeys(), ['HYPE', 'SNDK', 'SPCX', 'BNB'], 'only verified markets can be streamed or charted');
@@ -240,13 +240,11 @@ test('WebSocket: verified view markets (crypto and equities) can be subscribed, 
   } finally { await e.drop(); }
 });
 
-test('logos (r123): crypto logos are the verified CoinGecko images, fetched once and cached; stocks have none unless an official file is declared; no screenshot cut-out is ever served', opts, async () => {
-  const e = await boot(); try {
+test('logos (r126): all 11 markets are served from the declared official files in assets/logos, with no network fetch (works while CoinGecko answers 429)', opts, async () => {
+  const e = await boot({ before: S => { S.mode.cg = 'http429'; } }); try {
     const port = await e.app.start({ port: 0, host: '127.0.0.1' }); const base = 'http://127.0.0.1:' + port;
-    for (const k of ['SOL', 'ETH', 'BTC', ...CRYPTO]) { const a = await fetch(base + '/v1/perps/logos/' + k); assert.equal(a.status, 200, k); assert.equal(a.headers.get('content-type'), 'image/png'); }
-    await fetch(base + '/v1/perps/logos/HYPE'); assert.equal(e.S.logo.filter(u => /hyperliquid/.test(u)).length, 1, 'fetched once, then cached');
-    assert.ok(e.S.logo.every(u => u.startsWith('https://coin-images.coingecko.com/')), 'only the verified CoinGecko image host');
-    for (const k of STOCKS) assert.equal((await fetch(base + '/v1/perps/logos/' + k)).status, 404, k + ': no official file declared -> no logo');
+    for (const k of ['SOL', 'ETH', 'BTC', ...ALL]) { const a = await fetch(base + '/v1/perps/logos/' + k); assert.equal(a.status, 200, k); assert.equal(a.headers.get('content-type'), 'image/png'); assert.match(a.headers.get('cache-control'), /max-age=86400/); }
+    assert.equal(e.S.logo.length, 0, 'no image was downloaded from anywhere');
     assert.equal((await fetch(base + '/v1/perps/logos/DOGE')).status, 404);
     assert.equal((await fetch(base + '/v1/perps/logos/HYPE', { method: 'POST' })).status, 405);
   } finally { await e.drop(); }
@@ -262,7 +260,7 @@ test('logos (r123): a shipped file is used only when declared in SOURCES.json wi
   const m = loadBundledLogos(['SNDK', 'SPCX', 'SKHYNIX'], new URL('file://' + d + '/'));
   assert.deepEqual([...m.keys()], ['SNDK'], 'wrong hash and missing source are refused'); assert.equal(m.get('SNDK').source, 'https://example-official.test/brand');
   assert.equal(loadBundledLogos(['SNDK'], new URL('file://' + d + '/missing/')).size, 0, 'no manifest -> nothing');
-  const shipped = loadBundledLogos(['SOL', 'ETH', 'BTC', ...ALL]); assert.equal(shipped.size, 0, 'the repository ships no undeclared logo');
+  const shipped = loadBundledLogos(['SOL', 'ETH', 'BTC', ...ALL], new URL('../assets/logos/', import.meta.url)); assert.equal(shipped.size, 11, 'the repository ships 11 declared, hash-matching official logos');
 });
 
 test('logos: without a bundled file, only a verified image on an allow-listed host is fetched (once), never anything else', opts, async () => {

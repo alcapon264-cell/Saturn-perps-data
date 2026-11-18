@@ -98,7 +98,7 @@ test('candles: parameter validation matrix (fuzz)', opts, async () => {
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=500')).status, 200); assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&limit=1')).status, 200);
     assert.equal((await e.get('/v1/perps/candles?market=SOL&tf=1h&includeForming=yes')).status, 200, 'unknown flag values are ignored, not echoed');
     assert.equal((await e.get('/nope')).status, 404); assert.equal((await e.get('/v1/perps/orders')).status, 404); assert.equal((await e.get('/v1/perps/candles/../../etc/passwd')).status, 404);
-    const tables = await e.db.rows("SELECT count(*)::int n FROM information_schema.tables WHERE table_name LIKE 'perps_%'"); assert.equal(tables[0].n, 12, 'no table was dropped (7 data tables + perps_exec_requests from 002 + 4 perps_view_* tables from 003)');
+    const tables = await e.db.rows("SELECT count(*)::int n FROM information_schema.tables WHERE table_name LIKE 'perps_%'"); assert.equal(tables[0].n, 14, 'no table was dropped (7 data tables + perps_exec_requests from 002 + 4 perps_view_* tables from 003 + perps_hl_requests from 004 + perps_hl_funding from 005)');
   } finally { await e.drop(); }
 });
 

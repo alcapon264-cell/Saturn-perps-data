@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /* Static guarantees about the repository: read-only, isolated, no secrets in code. [no network, no database] */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +22,19 @@ test('isolation: the existing Saturn WebSocket constant and hosts never appear i
 
 test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere', () => {
   const callers = Object.entries(prod).filter(([f, t]) => /\bfetch\s*\(|fetchImpl\s*\(|https?\.request|net\.connect|axios/.test(t) && !/live-check/.test(f)).map(([f]) => f);
-  assert.deepEqual(callers.sort(), ['src/jupiter.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly two modules (r120 adds the free view-only sources)');
+  assert.deepEqual(callers.sort(), ['src/hl-exec.js', 'src/jupiter.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay)');
+  /* r128: the Hyperliquid relay talks ONLY to Hyperliquid MAINNET, on exactly two fixed paths, and never signs anything (it only recovers signers) */
+  const hx = prod['src/hl-exec.js'].replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(hx, /export const HL_API = 'https:\/\/api\.hyperliquid\.xyz';/);
+  assert.deepEqual([...hx.matchAll(/fetchImpl\(([^,]+),/g)].map(m => m[1].trim()).sort(), ['C.arbRpc', "api + '/exchange'", "api + '/info'"]);
+  /* r129: Arbitrum RPC is read-only (balances, receipts); the relay can never send an Arbitrum transaction */
+  assert.match(hx, /export const DEFAULT_ARB_RPC = 'https:\/\/arb1\.arbitrum\.io\/rpc';/);
+  assert.deepEqual([...new Set([...hx.matchAll(/arb\('(eth_\w+)'/g)].map(m => m[1]))].sort(), ['eth_call', 'eth_getBalance', 'eth_getTransactionReceipt']);
+  assert.ok(!/eth_send(Raw)?Transaction/.test(hx));
+  assert.ok(!/signL1Action|signDigest|newPrivateKey|signUserSignedAction|hyperliquid-testnet/.test(hx), 'the relay never signs and never targets testnet');
+  assert.match(hx, /export const HL_EXECUTE_VERIFIED = false;/, 'real-money switch in code stays off until approved');
+  assert.equal(createHash('sha256').update(readFileSync(path.join(root, 'src/vendor/hlsign.mjs'))).digest('hex'), '572220e3e1d3c6a8445dbc9f0c3c3b608b4aefff3b3390fddd65bf4576c0b6c6', 'vendored Hyperliquid crypto is byte-pinned');
+  assert.deepEqual(Object.entries(prod).filter(([f, t]) => /vendor\/hlsign/.test(t)).map(([f]) => f), ['src/hl-exec.js'], 'only the relay imports the vendored crypto');
   const vs = prod['src/viewsources.js'];
   assert.match(vs, /HL_HOST = 'api\.hyperliquid\.xyz'/); assert.match(vs, /CG_HOST = 'api\.coingecko\.com'/);
   assert.match(vs, /u\.hostname !== HL_HOST\) throw/); assert.match(vs, /u\.hostname !== CG_HOST\) throw/, 'r120 sources have fixed hosts');
@@ -36,6 +49,7 @@ test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the
   for (const [f, t] of Object.entries(prod)) {
     const code = t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     if (!['src/jupiter.js', 'src/gateway.js', 'src/perps-program.js'].includes(f) && !/live-check/.test(f)) assert.ok(!/\/(orders?|positions?|trades?|swap|increase|decrease|close|limit|deposit|withdraw|transfer)\b/i.test(code), f + ' references a trading endpoint outside the gateway');
+    if (f === 'src/vendor/hlsign.mjs') continue;   /* r128 vendored audited crypto (pinned by hash below); the relay uses it only to RECOVER signers */
     assert.ok(!/signTransaction|sendTransaction|Keypair|privateKey|secretKey|mnemonic|wallet\.sign|@solana\/web3|createPrivateKey|crypto\.sign\(|\bsign\(/i.test(code), f + ' touches wallet/signing');
   }
   assert.ok(!/market-stats/.test(Object.entries(prod).filter(([f]) => !['src/jupiter.js', 'src/config.js', 'src/gateway.js'].includes(f) && !/live-check/.test(f)).map(x => x[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')).join('')), 'market-stats URL is built only in the Jupiter client');
@@ -43,7 +57,8 @@ test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the
 
 test('HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bodies (behind the execution switch); no eval/child_process/dynamic require', () => {
   const h = prod['src/http.js']; assert.ok(!/req\.on\(['"]data/.test(h) && !/JSON\.parse\(.*body/i.test(h), 'http.js never reads request bodies');
-  for (const [f, t] of Object.entries(prod)) if (f !== 'src/gateway.js') assert.ok(!/req\.on\(['"]data/.test(t), f + ' reads a request body; only the gateway may');
+  for (const [f, t] of Object.entries(prod)) if (f !== 'src/gateway.js' && f !== 'src/hl-exec.js') assert.ok(!/req\.on\(['"]data/.test(t), f + ' reads a request body; only the gateways may');
+  { const hx = prod['src/hl-exec.js']; const ex = hx.slice(hx.indexOf('async function exchange(')); assert.ok(ex.indexOf('if (!C.enabled)') > 0 && ex.indexOf('if (!C.enabled)') < ex.indexOf('await readBody(req)'), 'r128 relay: the execution switch is checked before any body is read'); assert.match(hx, /C\.maxBody/); }
   const g = prod['src/gateway.js']; assert.match(g, /if \(!G\.executionEnabled\)/, 'transaction routes are behind the execution switch'); assert.match(g, /G\.maxBody/);
   for (const [f, t] of Object.entries(prod)) { if (/live-check/.test(f)) continue; assert.ok(!/\beval\s*\(|new Function|child_process|require\(\s*[^'"]|import\(\s*[^'"]/.test(t) || f === 'server.js', f); }
   assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets']);
