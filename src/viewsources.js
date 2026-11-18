@@ -57,15 +57,28 @@ export function createHyperliquidClient({ fetchImpl = globalThis.fetch, base = H
       const coins = new Map(); for (const a of U) { if (!a || typeof a.name !== 'string' || !COIN.test(a.name)) continue; coins.set(qualify(dex, a.name), { delisted: a.isDelisted === true }); }
       return { ok: true, coins };
     },
-    /* -> {ok:true, coins: Map(name -> {delisted, midPx, markPx, oraclePx, prevDayPx})}  listing + the venue's own oracle and previous-day price */
+    /* -> {ok:true, coins: Map(name -> {delisted, midPx, markPx, oraclePx, prevDayPx, dayNtlVlm, openInterest})}  listing + the venue's own oracle, previous-day
+     *    price, r132: 24 h notional volume (USD) and open interest (in coins), exactly as Hyperliquid publishes them */
     async metaAndAssetCtxs(dex = '') {
       const r = await info('metaAndAssetCtxs', dex, 4 * 1024 * 1024); if (!r.ok) return r;
       const j = r.json; const U = Array.isArray(j) && j[0] && Array.isArray(j[0].universe) ? j[0].universe : null, C = Array.isArray(j) && Array.isArray(j[1]) ? j[1] : null;
       if (!U || !C || U.length !== C.length || U.length === 0 || U.length > 5000) return { ok: false, outcome: 'malformed', detail: 'bad_ctxs' };
       const coins = new Map();
       U.forEach((a, i) => { if (!a || typeof a.name !== 'string' || !COIN.test(a.name)) return; const c = C[i] || {};
-        coins.set(qualify(dex, a.name), { delisted: a.isDelisted === true, midPx: dec(c.midPx), markPx: dec(c.markPx), oraclePx: dec(c.oraclePx), prevDayPx: dec(c.prevDayPx) }); });
+        coins.set(qualify(dex, a.name), { delisted: a.isDelisted === true, midPx: dec(c.midPx), markPx: dec(c.markPx), oraclePx: dec(c.oraclePx), prevDayPx: dec(c.prevDayPx), dayNtlVlm: dec(c.dayNtlVlm), openInterest: dec(c.openInterest) }); });
       return { ok: true, coins };
+    },
+    /* r132 -> {ok:true, candles:[{t,o,h,l,c,v}]}  the venue's own 1 h candles for ONE coin (Hyperliquid candleSnapshot), oldest first */
+    async candles1h(coin, startTime, endTime) {
+      if (typeof coin !== 'string' || !COIN.test(coin) || !Number.isInteger(startTime) || !Number.isInteger(endTime) || endTime <= startTime || endTime - startTime > 3 * 86400000) throw new Error('bad_candle_request');
+      const r = await bounded(fetchImpl, base + '/info', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: '1h', startTime, endTime } }) }, { timeoutMs, maxBody: 256 * 1024 });
+      if (!r.ok) return r;
+      if (!Array.isArray(r.json) || r.json.length > 200) return { ok: false, outcome: 'malformed', detail: 'candles_not_array' };
+      const out = [];
+      for (const k of r.json) { const o = dec(k && k.o), h = dec(k && k.h), l = dec(k && k.l), c = dec(k && k.c), v = dec(k && k.v);
+        if (!k || !Number.isInteger(k.t) || !(o > 0 && h > 0 && l > 0 && c > 0) || h < l || v == null) return { ok: false, outcome: 'malformed', detail: 'bad_candle' };
+        out.push({ t: k.t, o, h, l, c, v }); }
+      out.sort((a, b) => a.t - b.t); return { ok: true, candles: out };
     },
     /* -> {ok:true, mids: {COIN: '123.45'}, ms}  one request for every market of one market set */
     async allMids(dex = '') {

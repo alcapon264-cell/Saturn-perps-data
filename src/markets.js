@@ -6,7 +6,11 @@
  * provider     who supplied the price            'jupiter-perps' | 'hyperliquid'
  * venue        where that price is formed        'jupiter-perps' (Solana) | 'hyperliquid' (main perps) | 'hyperliquid:xyz' (Trade.xyz HIP-3)
  * priceKind    what the number is                'jupiter_perps_market_price' | 'hyperliquid_perp_mid'
- * executable   true ONLY for SOL/ETH/BTC (Jupiter custody exists); a published price never makes a market tradable
+ * executable   r132: true ONLY when that market's COMPLETE execution path is ready (see `execution`). SOL/ETH/BTC keep their r124 rule
+ *              (Jupiter custody exists). A Hyperliquid/Trade.xyz market is executable only when the Saturn relay is switched on (code + env),
+ *              the market is in HL_VERIFIED_MARKETS and Hyperliquid mainnet lists it right now. A published price never makes a market tradable.
+ * execution    r132 {adapter, network, venueAssetId, venueCoin, collateral, marginMode, maxLeverage, ready, blocker} computed by the service
+ *              from its own switches and the venue's live metadata, never from a client
  * source       the observation source tag stored with every row ('jupiter-perps:market-stats' | 'hyperliquid:allMids') */
 import { MARKETS, MARKET_KEYS, MARKET_META, SOURCE, VIEW_MARKET_TABLE, VIEW_SOURCE } from './config.js';
 import { CUSTODY } from './perps-program.js';
@@ -27,15 +31,20 @@ for (const [k, r] of Object.entries(REGISTRY)) if (r.viewOnly && (r.executable |
 
 /* the contract: every market row has exactly these keys (absent values are null; nothing is invented) */
 export const CONTRACT_FIELDS = Object.freeze(['ageMs', 'category', 'change24h', 'crossCheck', 'executable', 'history', 'icon', 'market', 'maxLeverage', 'mint', 'name', 'observedAt',
-  'openInterest', 'price', 'priceKind', 'provider', 'source', 'state', 'stats24h', 'status', 'symbol', 'venue', 'venueCoin', 'viewOnly', 'volume24h']);
+  'openInterest', 'price', 'priceKind', 'provider', 'source', 'state', 'stats24h', 'status', 'symbol', 'venue', 'venueCoin', 'viewOnly', 'volume24h', 'execution']);
+const EXEC_KEYS = ['adapter', 'network', 'venueAssetId', 'venueCoin', 'collateral', 'marginMode', 'maxLeverage', 'ready', 'blocker'];
+const nn = v => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
 
 export function toContract(row) {
   const r = REGISTRY[row && row.market]; if (!r) return null;
   const out = {};
   for (const f of CONTRACT_FIELDS) out[f] = row[f] === undefined ? null : row[f];
   /* identity, provider and eligibility always come from the registry, never from a provider response */
+  const ex = row.execution && typeof row.execution === 'object' ? Object.fromEntries(EXEC_KEYS.map(k => [k, row.execution[k] === undefined ? null : row.execution[k]])) : null;
+  if (ex) ex.ready = ex.ready === true;
   Object.assign(out, { market: r.market, symbol: r.market + '-PERP', name: r.name, category: r.category, provider: r.provider, venue: r.venue, priceKind: r.priceKind, source: r.source,
-    executable: r.executable, viewOnly: r.viewOnly, volume24h: null, openInterest: null });
+    executable: r.provider === 'jupiter-perps' ? r.executable : !!(ex && ex.ready), viewOnly: r.viewOnly, execution: ex,
+    volume24h: r.provider === 'hyperliquid' ? nn(row.volume24h) : null, openInterest: r.provider === 'hyperliquid' ? nn(row.openInterest) : null });
   if (!out.status) out.status = out.price != null ? 'ok' : (out.state === 'down' ? 'down' : out.state === 'no_data' ? 'no_data' : 'unavailable');
   return out;
 }

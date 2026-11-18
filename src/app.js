@@ -14,7 +14,7 @@ import { createHttpHandler } from './http.js';
 import { createHub } from './ws.js';
 import { migrate } from './db.js';
 import { createViewMarkets } from './view.js';
-import { toContract } from './markets.js';
+import { toContract, REGISTRY } from './markets.js';
 import { createHlGateway } from './hl-exec.js';
 
 export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
@@ -88,13 +88,34 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const gateway = cfg.gateway ? createGateway({ cfg, store, upstream: gwUpstream, limiter, now, metrics, getLivePrice: marketView }) : null;
   /* r128: Hyperliquid mainnet relay; its own module, its own table (migration 004). Never touches the Jupiter gateway or the recorder. */
   const hlGateway = cfg.hl ? createHlGateway({ cfg, store, limiter, now, fetchImpl: hlFetchImpl || viewFetchImpl, metrics, log }) : null;
+  /* r132: the TRUE execution status of every market, from this service's own switches + the venue's live metadata (Hyperliquid mainnet discovery,
+   * cached 60 s by the relay). executable === execution.ready; a blocker names exactly what is missing. */
+  async function executionFor() {
+    let disc = null, discErr = null;
+    if (hlGateway && cfg.hl && cfg.hl.enabled) { try { disc = new Map((await hlGateway.markets()).map(x => [x.market, x])); } catch (e) { discErr = 'hyperliquid_unreachable'; } }
+    const G = cfg.gateway;
+    return r => {
+      if (r.provider === 'jupiter-perps') {
+        const blocker = !CUSTODY[r.market] ? 'no_jupiter_custody' : !G ? 'gateway_not_configured' : !G.executionEnabled ? (G.executionRequested ? 'execution_contract_unverified' : 'PERPS_EXECUTION_ENABLED_off') : null;
+        return { ...r, execution: { adapter: 'jupiter-perps-solana', network: 'solana-mainnet', venueAssetId: CUSTODY[r.market] || null, venueCoin: r.market, collateral: 'USDC, SOL, ETH, BTC (Solana)', marginMode: 'isolated', maxLeverage: r.maxLeverage ?? null, ready: !blocker, blocker } };
+      }
+      const H = cfg.hl, d = disc && disc.get(r.market);
+      const blocker = !H || !H.requested ? 'HL_EXECUTION_ENABLED_off' : !H.enabled ? 'HL_EXECUTE_VERIFIED_off' : !H.verifiedMarkets.includes(r.market) ? 'not_in_HL_VERIFIED_MARKETS'
+        : discErr || !d ? (discErr || 'hyperliquid_unreachable') : !d.listed ? (d.blocker || 'not_listed_on_hyperliquid') : null;
+      return { ...r, maxLeverage: d && d.listed ? d.maxLeverage : r.maxLeverage, venueCoin: d && d.coin || r.venueCoin,
+        execution: { adapter: 'hyperliquid-relay', network: 'hyperliquid-mainnet', venueAssetId: d && d.listed ? d.asset : null, venueCoin: d && d.coin || null, collateral: 'USDC (Hyperliquid' + (r.venue === 'hyperliquid:xyz' ? ', Trade.xyz balance' : '') + '; funded from the Saturn Wallet on Arbitrum One)',
+          marginMode: d && d.listed ? (d.onlyIsolated ? 'isolated' : 'cross') : null, maxLeverage: d && d.listed ? Math.min(d.maxLeverage, H ? H.maxLeverage : d.maxLeverage) : null, ready: !blocker, blocker } };
+    };
+  }
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, isShuttingDown: () => shuttingDown,
     /* r124: one contract for all 11 markets (src/markets.js) */
-    getMarketsView: async () => [...(await marketsView()), ...(await view.marketsView().catch(() => []))].map(toContract).filter(Boolean)
-      /* r128: a Hyperliquid market stops being "view only" ONLY when real-money Hyperliquid execution is fully enabled (code + env) AND the market is in
-       * HL_VERIFIED_MARKETS. executable stays false: that flag means the Jupiter/Solana path, which these markets never use. */
-      .map(r => r.provider === 'hyperliquid' && cfg.hl && cfg.hl.enabled && cfg.hl.verifiedMarkets.includes(r.market) ? { ...r, viewOnly: false } : r),
+    /* r128: a Hyperliquid market stops being "view only" ONLY when real-money Hyperliquid execution is fully enabled (code + env) AND the market is in
+     * HL_VERIFIED_MARKETS. r132: every row also carries its computed `execution`; toContract() derives `executable` from it (Hyperliquid) or keeps
+     * the custody rule (SOL/ETH/BTC, unchanged), so the published flag is the real readiness of the whole path. */
+    getMarketsView: async () => { const ex = await executionFor();
+      return [...(await marketsView()), ...(await view.marketsView().catch(() => []))].map(r => r && REGISTRY[r.market] ? ex({ ...r, provider: REGISTRY[r.market].provider, venue: REGISTRY[r.market].venue }) : r).map(toContract).filter(Boolean)
+        .map(r => r.provider === 'hyperliquid' && cfg.hl && cfg.hl.enabled && cfg.hl.verifiedMarkets.includes(r.market) ? { ...r, viewOnly: false } : r); },
     view,
     /* PUBLIC: minimal liveness only. Nothing operational, nothing about markets, queues, thresholds or versions. */
     getHealth: async () => {

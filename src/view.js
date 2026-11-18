@@ -94,7 +94,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
         const q = Q[m]; const name = T(m).venueCoins.find(c => r.coins.has(c) && !r.coins.get(c).delisted) || T(m).venueCoins.find(c => r.coins.has(c));
         const c = name ? r.coins.get(name) : null;
         q.listed = !!c && !c.delisted; q.listedReason = !c ? 'not_listed_on_hyperliquid' : c.delisted ? 'delisted_on_hyperliquid' : null;
-        q.coin = q.listed ? name : null; q.ctx = c ? { oraclePx: c.oraclePx, prevDayPx: c.prevDayPx, midPx: c.midPx, at: now() } : null;
+        q.coin = q.listed ? name : null; q.ctx = c ? { oraclePx: c.oraclePx, prevDayPx: c.prevDayPx, midPx: c.midPx, markPx: c.markPx, dayNtlVlm: c.dayNtlVlm, openInterest: c.openInterest, at: now() } : null;
         if (q.listed) await upsertMarket(m, name).catch(e => log('view: market row failed', m, e && e.message));
         if (q.listed && CHK(m) === 'oracle') oracleCheck(m, c);
       }
@@ -208,6 +208,30 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     const c = q && q.ctx; if (!c || !(c.prevDayPx > 0) || !(price > 0) || t - c.at > V.ctxMaxAgeMs) return null;
     return { changePct: +((price - c.prevDayPx) / c.prevDayPx * 100).toFixed(4), reference: c.prevDayPx, basis: 'hyperliquid_prevDayPx' };
   }
+  /* r132: until Saturn's own 24 hourly candles exist, 24 h high/low/open from the SAME venue that prices the market (Hyperliquid candleSnapshot 1 h).
+   * Real venue candles only, never estimated; needs 24 complete hours; attributed with basis 'hyperliquid_candles_1h'. Cached 5 min per market. */
+  const venueStatsCache = new Map();
+  async function venueStats24h(m, coin, price, t = now()) {
+    if (!coin || !(price > 0)) return null;
+    const c = venueStatsCache.get(m); if (c && t - c.at < 300000) return c.v;
+    let v = null;
+    try {
+      const hour = 3600000, end = Math.floor(t / hour) * hour, r = await hl.candles1h(coin, end - 24 * hour, t);
+      if (r.ok) {
+        const done = r.candles.filter(k => k.t >= end - 24 * hour && k.t < end);
+        const ok = done.length === 24 && done.every((k, i) => k.t === end - (24 - i) * hour);
+        if (ok) { const open = done[0].o; let high = Math.max(...done.map(k => k.h)), low = Math.min(...done.map(k => k.l)); high = Math.max(high, price); low = Math.min(low, price);
+          v = { open, high, low, last: price, changePct: +((price - open) / open * 100).toFixed(4), hours: 24, from: Math.floor(done[0].t / 1000), basis: 'hyperliquid_candles_1h' }; }
+      } else metrics?.inc('view_venue_candles_' + r.outcome);
+    } catch { v = null; }
+    venueStatsCache.set(m, { at: t, v }); return v;
+  }
+  /* r132: the venue's own 24 h notional volume and open interest (USD), only from a fresh context read */
+  function venueVolume(q, price, t = now()) {
+    const c = q && q.ctx; if (!c || t - c.at > V.ctxMaxAgeMs) return { volume24h: null, openInterest: null };
+    const px = c.markPx > 0 ? c.markPx : price;
+    return { volume24h: c.dayNtlVlm != null && c.dayNtlVlm >= 0 ? c.dayNtlVlm : null, openInterest: c.openInterest != null && c.openInterest >= 0 && px > 0 ? +(c.openInterest * px).toFixed(2) : null };
+  }
   const stateFromAge = ageMs => ageMs == null ? 'no_data' : ageMs <= cfg.staleMult * cfg.intervalSec * 1000 ? 'live' : ageMs <= cfg.downSec * 1000 ? 'stale' : 'down';
   const hasLogo = async m => BUNDLED.has(m) || !!(await logoUrl(m));
 
@@ -222,7 +246,8 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
       const qual = quality(m, q, st.rec);
       const show = qual.ok && !!last && state !== 'down';
       const hist = show ? await history(m) : { state: 'collecting', hours: 0 };
-      const s24 = show ? await stats24h(m, hist) : null;
+      const own = show ? await stats24h(m, hist) : null;
+      const s24 = own || (show ? await venueStats24h(m, q && q.coin, last.price) : null), vol = show ? venueVolume(q, last.price) : { volume24h: null, openInterest: null };
       out.push({
         icon: (await hasLogo(m)) ? '/v1/perps/logos/' + m : null,
         market: m, price: show ? last.price : null, observedAt: show ? Math.floor(last.t / 1000) : null, ageMs: show ? ageMs : null, state: show ? state : 'unavailable',
@@ -230,7 +255,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
         symbol: m + '-PERP', mint: null, name: T(m).name, category: T(m).category, maxLeverage: null, executable: false, viewOnly: true,
         source: VIEW_SOURCE, venue: T(m).dex ? 'hyperliquid:' + T(m).dex : 'hyperliquid', venueCoin: q && q.coin || null,
         crossCheck: { source: CHK(m) === 'oracle' ? 'hyperliquid-oracle' : 'coingecko', ok: qual.ok, reason: qual.reason, diffPct: q && q.diffPct != null ? q.diffPct : null, checkedAt: q && q.checkAt ? Math.floor(q.checkAt / 1000) : null },
-        history: hist, stats24h: s24, change24h: show && !s24 ? sourceChange(q, last.price) : null, volume24h: null, openInterest: null
+        history: hist, stats24h: s24, change24h: show && !s24 ? sourceChange(q, last.price) : null, volume24h: vol.volume24h, openInterest: vol.openInterest
       });
     }
     return out;
