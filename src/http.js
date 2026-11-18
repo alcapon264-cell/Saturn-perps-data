@@ -7,7 +7,7 @@ import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, view = null, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, view = null, isShuttingDown = () => false }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -32,11 +32,17 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       let url; try { url = new URL(req.url || '/', 'http://localhost'); } catch { return err(res, 400, 'bad_request', cors); }
       const path = url.pathname, q = url.searchParams;
       const isGw = !!gateway && path.startsWith('/v1/perps/jup/');
-      if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'access-control-allow-methods': isGw ? 'GET, POST, OPTIONS' : 'GET, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600' }); return res.end(); }
+      const isHl = !!hlGateway && path.startsWith('/v1/perps/hl/');   /* r128 Hyperliquid relay: src/hl-exec.js */
+      if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'access-control-allow-methods': isGw || isHl ? 'GET, POST, OPTIONS' : 'GET, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600' }); return res.end(); }
       const ip = clientIp(req, cfg.http.trustedProxyHops);
       if (isGw) {
         if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
         const [code, body, extra] = await gateway.handle(req, path, q, ip);
+        return send(res, code, body, { ...cors, ...(extra || {}) });
+      }
+      if (isHl) {
+        if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
+        const [code, body, extra] = await hlGateway.handle(req, path, q, ip);
         return send(res, code, body, { ...cors, ...(extra || {}) });
       }
       if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);

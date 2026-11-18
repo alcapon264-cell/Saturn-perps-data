@@ -36,6 +36,11 @@ export function createStore(db, { tableSet = 'jlp', source = SOURCE } = {}) {
       const r = await db.query('SELECT extract(epoch from observed_at)*1000 AS t, price FROM ' + T.obs + ' WHERE source=$1 AND market=$2 ORDER BY observed_at DESC LIMIT 1', [SRC, market]);
       return r.rows[0] ? { t: n(r.rows[0].t), price: n(r.rows[0].price) } : null;
     },
+    /* r126: the single real observation closest to targetMs, within +-tolMs (null if none). Same market, same source, nothing interpolated. */
+    async observationNear(market, targetMs, tolMs) {
+      const r = await db.query('SELECT extract(epoch from observed_at)*1000 AS t, price FROM ' + T.obs + ' WHERE source=$1 AND market=$2 AND observed_at BETWEEN to_timestamp($3) AND to_timestamp($4) ORDER BY abs(extract(epoch from observed_at) - $5) ASC LIMIT 1', [SRC, market, ts(targetMs - tolMs), ts(targetMs + tolMs), targetMs / 1000]);
+      return r.rows[0] ? { t: n(r.rows[0].t), price: n(r.rows[0].price) } : null;
+    },
     async firstObservationMs(market) {
       const r = await db.query('SELECT extract(epoch from min(observed_at))*1000 AS t FROM ' + T.obs + ' WHERE source=$1 AND market=$2', [SRC, market]);
       return r.rows[0] && r.rows[0].t != null ? n(r.rows[0].t) : null;
@@ -101,6 +106,41 @@ export function createStore(db, { tableSet = 'jlp', source = SOURCE } = {}) {
     async settleExec(signature, state, upstreamStatus = null) {
       if (!['submitted', 'rejected', 'unknown'].includes(state)) throw new Error('bad_exec_state');
       await db.query("UPDATE perps_exec_requests SET state = $2, upstream_status = $3, updated_at = now() WHERE signature = $1 AND state = 'pending'", [signature, state, upstreamStatus]);
+    },
+    /* ---- r128 Hyperliquid relay (migration 004). No signatures, keys or raw IPs are ever stored. ---- */
+    async hlClaim(r) {
+      const v = [r.id, r.user_addr, r.signer, r.action_type, r.market ?? null, r.asset ?? null, r.is_buy ?? null, r.size ?? null, r.price ?? null, r.reduce_only ?? null, r.tif ?? null, r.cloid ?? null, r.notional_usd ?? null, r.amount_usd ?? null, r.ip_hash ?? null];
+      try {
+        const x = await db.query("INSERT INTO perps_hl_requests(id,user_addr,signer,action_type,market,asset,is_buy,size,price,reduce_only,tif,cloid,notional_usd,amount_usd,ip_hash,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending') ON CONFLICT (id) DO NOTHING RETURNING id", v);
+        if (x.rows.length) return { fresh: true };
+        const p = await db.query('SELECT state, reason, response FROM perps_hl_requests WHERE id = $1', [r.id]);
+        return { fresh: false, prior: p.rows[0] || { state: 'unknown' } };
+      } catch (e) { if (/perps_hl_user_cloid|duplicate key/i.test(String(e && e.message))) return { fresh: true, cloidTaken: true }; throw e; }
+    },
+    async hlSettle(id, state, { upstream = null, latency = null, reason = null, response = null } = {}) {
+      if (!['submitted', 'rejected', 'unknown', 'refused'].includes(state)) throw new Error('bad_hl_state');
+      let resp = response == null ? null : JSON.stringify(response); if (resp && resp.length > 3900) resp = null;
+      await db.query("UPDATE perps_hl_requests SET state = $2, upstream_status = $3, latency_ms = $4, reason = $5, response = $6::jsonb, updated_at = now() WHERE id = $1 AND state = 'pending'", [id, state, upstream, latency, reason == null ? null : String(reason).slice(0, 200), resp]);
+    },
+    async hlRecord(r) {
+      await db.query("INSERT INTO perps_hl_requests(id,user_addr,signer,action_type,market,state,reason,ip_hash) VALUES ($1,$2,$3,$4,$5,'refused',$6,$7) ON CONFLICT (id) DO NOTHING", [r.id, r.user_addr, r.signer, r.action_type, r.market ?? null, String(r.reason || '').slice(0, 200), r.ip_hash ?? null]);
+    },
+    /* ---- r129 pending funding transfers (migration 005) ---- */
+    async hlFundingAdd({ tx_hash, user_addr, amount_usd }) {
+      const r = await db.query("INSERT INTO perps_hl_funding(tx_hash,user_addr,amount_usd,state) VALUES ($1,$2,$3,'pending') ON CONFLICT (tx_hash) DO NOTHING RETURNING tx_hash", [tx_hash, user_addr, amount_usd]);
+      return r.rows.length === 1;
+    },
+    async hlFundingList(user_addr) {
+      const r = await db.query("SELECT tx_hash, amount_usd, state, ledger_hash, extract(epoch from created_at)*1000 AS t FROM perps_hl_funding WHERE user_addr = $1 AND created_at > now() - interval '30 days' ORDER BY created_at", [user_addr]);
+      return r.rows.map(x => ({ tx_hash: x.tx_hash, amount: Number(x.amount_usd), state: x.state, ledger_hash: x.ledger_hash, t: Number(x.t) }));
+    },
+    async hlFundingCredit(tx_hash, ledger_hash) {
+      try { const r = await db.query("UPDATE perps_hl_funding SET state = 'credited', ledger_hash = $2, credited_at = now() WHERE tx_hash = $1 AND state = 'pending' RETURNING tx_hash", [tx_hash, ledger_hash]); return r.rows.length === 1; }
+      catch (e) { if (/duplicate key/i.test(String(e && e.message))) return false; throw e; }
+    },
+    async hlPurge(olderThanMs) {
+      const r = await db.query('DELETE FROM perps_hl_requests WHERE created_at < to_timestamp($1) RETURNING 1', [ts(olderThanMs)]);
+      return r.rows.length;
     },
     async purgeExec(olderThanMs) {
       const r = await db.query('DELETE FROM perps_exec_requests WHERE created_at < to_timestamp($1) RETURNING 1', [ts(olderThanMs)]);

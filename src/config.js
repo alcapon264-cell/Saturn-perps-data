@@ -59,6 +59,7 @@ const num = (v, d, { min = -Infinity, max = Infinity } = {}) => {
 };
 const list = s => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
 
+import { hlConfig } from './hl-exec.js';
 export function loadConfig(env = process.env) {
   const intervalSec = num(env.SAMPLE_INTERVAL_SEC, 15, { min: 5, max: 300 });
   const priceRange = {};
@@ -109,6 +110,8 @@ export function loadConfig(env = process.env) {
     jupiterKeyHeader: env.JUPITER_API_KEY_HEADER || '', jupiterKey: env.JUPITER_API_KEY || '',
     /* Perps gateway (/v1/perps/jup/*). Reads are on. The three transaction routes exist but answer 403 execution_disabled unless
      * PERPS_EXECUTION_ENABLED=1 AND a ticket secret is set. Real-money execution is NOT approved: leave this unset. */
+    /* r128 Hyperliquid mainnet relay (/v1/perps/hl/*). Real-money execution needs HL_EXECUTION_ENABLED=1 AND HL_EXECUTE_VERIFIED in src/hl-exec.js. */
+    hl: hlConfig(env),
     gateway: {
       /* r117: the environment can only REQUEST execution. It runs only if the Jupiter contract is also marked verified in code (perps-program.js). */
       executionRequested: /^1$/.test(String(env.PERPS_EXECUTION_ENABLED || '')) && String(env.GATEWAY_TICKET_SECRET || '').length >= 32,

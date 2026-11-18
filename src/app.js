@@ -15,8 +15,9 @@ import { createHub } from './ws.js';
 import { migrate } from './db.js';
 import { createViewMarkets } from './view.js';
 import { toContract } from './markets.js';
+import { createHlGateway } from './hl-exec.js';
 
-export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
+export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
   const metrics = createMetrics();
   const store = createStore(db);
   const readStore = createStore(readerDb || db);
@@ -62,6 +63,15 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
         let high = -Infinity, low = Infinity; for (const k of win) { if (k.h > high) high = k.h; if (k.l < low) low = k.l; }
         if (open > 0 && Number.isFinite(high) && Number.isFinite(low)) v = { open, high, low, last, changePct: +((last - open) / open * 100).toFixed(4), hours: win.length, from: win[0].t, basis: 'saturn_sampled_1h' };
       }
+      /* r126: when the hourly history has gaps (the free Render plan sleeps when idle), the 24 h change is still computed from two REAL observations:
+       * the latest one and the one recorded closest to exactly 24 h earlier (accepted only within +-30 min). High/low need the full hourly history, so they stay null. */
+      if (!v) {
+        const last = await readStore.lastObservation(m);
+        if (last && now() - last.t <= cfg.downSec * 1000) {
+          const ref = await readStore.observationNear(m, last.t - 24 * 3600 * 1000, 30 * 60 * 1000);
+          if (ref && ref.price > 0) v = { open: ref.price, high: null, low: null, last: last.price, changePct: +((last.price - ref.price) / ref.price * 100).toFixed(4), hours: null, from: Math.floor(ref.t / 1000), basis: 'saturn_observation_24h' };
+        }
+      }
     } catch { v = null; }
     statsCache.set(m, { at: now(), v }); return v;
   }
@@ -76,10 +86,15 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   /* Perps gateway: positions via Jupiter, live price from this service's own recorder, execution routes off unless explicitly enabled. Writes (idempotency rows) use the primary role. */
   const gwUpstream = createJupiterGateway({ fetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, ...(jupiterBase ? { base: jupiterBase } : {}) });
   const gateway = cfg.gateway ? createGateway({ cfg, store, upstream: gwUpstream, limiter, now, metrics, getLivePrice: marketView }) : null;
+  /* r128: Hyperliquid mainnet relay; its own module, its own table (migration 004). Never touches the Jupiter gateway or the recorder. */
+  const hlGateway = cfg.hl ? createHlGateway({ cfg, store, limiter, now, fetchImpl: hlFetchImpl || viewFetchImpl, metrics, log }) : null;
   const handler = createHttpHandler({
-    cfg, store: readStore, limiter, now, metrics, gateway, isShuttingDown: () => shuttingDown,
+    cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, isShuttingDown: () => shuttingDown,
     /* r124: one contract for all 11 markets (src/markets.js) */
-    getMarketsView: async () => [...(await marketsView()), ...(await view.marketsView().catch(() => []))].map(toContract).filter(Boolean),
+    getMarketsView: async () => [...(await marketsView()), ...(await view.marketsView().catch(() => []))].map(toContract).filter(Boolean)
+      /* r128: a Hyperliquid market stops being "view only" ONLY when real-money Hyperliquid execution is fully enabled (code + env) AND the market is in
+       * HL_VERIFIED_MARKETS. executable stays false: that flag means the Jupiter/Solana path, which these markets never use. */
+      .map(r => r.provider === 'hyperliquid' && cfg.hl && cfg.hl.enabled && cfg.hl.verifiedMarkets.includes(r.market) ? { ...r, viewOnly: false } : r),
     view,
     /* PUBLIC: minimal liveness only. Nothing operational, nothing about markets, queues, thresholds or versions. */
     getHealth: async () => {
@@ -145,6 +160,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     const r = await store.purge('perps_rejects', 'observed_at', t - cfg.retention.logDays * 86400000);
     const f = await store.purge('perps_fetch_log', 'at', t - cfg.retention.logDays * 86400000);
     const x = await store.purgeExec(t - 30 * 86400000).catch(() => 0);
+    const hx = await store.hlPurge(t - 90 * 86400000).catch(() => 0); if (hx) log('retention hl', hx);
     const vr = await view.retention().catch(() => null); if (vr) log('retention view', vr);
     await store.setMeta('retention_last_day', day); log('retention', { observations: o, rejects: r, fetchLog: f, execRequests: x });
   }
@@ -170,5 +186,5 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     await db.close().catch(() => {}); if (readerDb) await readerDb.close().catch(() => {});
   }
 
-  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, icons, view }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
+  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, hlGateway, icons, view }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
 }
