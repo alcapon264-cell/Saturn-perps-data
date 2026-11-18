@@ -104,14 +104,15 @@ test('discovery: listing read from BOTH market sets; ONE allMids per market set 
   } finally { await e.drop(); }
 });
 
-test('/v1/perps/markets: all 11 markets, view markets executable:false with null leverage/volume/OI, real 24 h change from the venue reference, stocks categorised', opts, async () => {
+test('/v1/perps/markets: all 11 markets, view markets executable:false (relay off) with the venue own volume/OI, real 24 h change from the venue reference, stocks categorised', opts, async () => {
   const e = await boot(); try {
     await slot(e); await e.view.tick();
     const port = await e.app.start({ port: 0, host: '127.0.0.1' }); const base = 'http://127.0.0.1:' + port;
     const r = await (await fetch(base + '/v1/perps/markets')).json();
     assert.deepEqual(r.markets.map(x => x.market), ['SOL', 'ETH', 'BTC', ...ALL]);
     for (const x of r.markets.filter(x => x.viewOnly)) {
-      assert.equal(x.executable, false); assert.equal(x.maxLeverage, null); assert.equal(x.volume24h, null); assert.equal(x.openInterest, null); assert.equal(x.mint, null);
+      assert.equal(x.executable, false); assert.equal(x.execution.ready, false); assert.equal(x.execution.blocker, 'HL_EXECUTION_ENABLED_off'); assert.equal(x.maxLeverage, null);
+      assert.equal(x.volume24h, 1, 'r132: Hyperliquid dayNtlVlm'); assert.ok(Math.abs(x.openInterest - x.price) / x.price < 0.01, 'r132: open interest (1 coin) x mark'); assert.equal(x.mint, null);
       assert.equal(x.source, 'hyperliquid:allMids'); assert.equal(x.crossCheck.ok, true, x.market + ' ' + JSON.stringify(x.crossCheck)); assert.ok(x.price > 0, x.market); assert.equal(x.status, 'ok');
       assert.equal(x.icon, '/v1/perps/logos/' + x.market, 'r126: every market has a declared official logo file in assets/logos'); assert.equal(x.stats24h, null);
     }

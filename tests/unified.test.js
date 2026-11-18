@@ -42,7 +42,11 @@ test('ONE contract: all 11 rows carry exactly the same fields, with provider, ve
     const by = Object.fromEntries(rows.map(r => [r.market, r]));
     for (const k of ['SOL', 'ETH', 'BTC']) { assert.equal(by[k].source, 'jupiter-perps:market-stats'); assert.equal(by[k].provider, 'jupiter-perps'); assert.equal(by[k].executable, true); assert.equal(by[k].viewOnly, false); }
     for (const k of VIEW) { assert.equal(by[k].source, 'hyperliquid:allMids'); assert.equal(by[k].provider, 'hyperliquid'); assert.equal(by[k].executable, false); assert.equal(by[k].viewOnly, true); }
-    for (const r of rows) { assert.equal(r.volume24h, null); assert.equal(r.openInterest, null); assert.ok(['ok', 'no_data', 'down', 'unavailable', 'stale'].includes(r.status) || typeof r.status === 'string', r.market); }
+    /* r132: Jupiter rows keep null volume/OI; Hyperliquid rows carry the venue's own dayNtlVlm and open interest x mark (fake: 1 and 1 coin) */
+    for (const k of ['SOL', 'ETH', 'BTC']) { assert.equal(by[k].volume24h, null); assert.equal(by[k].openInterest, null); assert.equal(by[k].execution.adapter, 'jupiter-perps-solana'); }
+    for (const k of VIEW) { assert.equal(by[k].volume24h, 1, k); assert.ok(Math.abs(by[k].openInterest - by[k].price) / by[k].price < 0.01, k + ' OI = 1 coin x the venue mark');
+      assert.deepEqual({ adapter: by[k].execution.adapter, ready: by[k].execution.ready, blocker: by[k].execution.blocker }, { adapter: 'hyperliquid-relay', ready: false, blocker: 'HL_EXECUTION_ENABLED_off' }, k); }
+    for (const r of rows) { assert.ok(['ok', 'no_data', 'down', 'unavailable', 'stale'].includes(r.status) || typeof r.status === 'string', r.market); }
   } finally { await e.drop(); }
 });
 
@@ -166,4 +170,45 @@ test('r126 24 h stats with a FULL hourly history keep the candle-based high/low/
     const sol = (await markets(e)).find(r => r.market === 'SOL').stats24h;
     assert.equal(sol.basis, 'saturn_sampled_1h'); assert.ok(sol.high >= sol.low && sol.hours >= 20);
   } finally { await e.drop(); }
+});
+
+/* ---------- r132 truthful execution status + the venue's own 24 h statistics ---------- */
+test('r132 executable is the REAL readiness: relay on + verified + listed -> true with the venue asset id; each other market names its exact blocker; SOL/ETH/BTC unchanged', opts, async () => {
+  const e = await boot({ env: { HL_EXECUTION_ENABLED: '1', HL_VERIFIED_MARKETS: 'HYPE,SNDK,ZEC' }, before: S => { S.universe = S.universe.map(a => a.name === 'ZEC' ? { ...a, isDelisted: true } : a); } }); try {
+    await cycle(e); await e.view.tick();
+    const by = Object.fromEntries((await markets(e)).map(r => [r.market, r]));
+    assert.equal(by.HYPE.executable, true); assert.deepEqual({ ...by.HYPE.execution }, { adapter: 'hyperliquid-relay', network: 'hyperliquid-mainnet', venueAssetId: 3, venueCoin: 'HYPE', collateral: by.HYPE.execution.collateral, marginMode: 'cross', maxLeverage: 10, ready: true, blocker: null });
+    assert.equal(by.HYPE.viewOnly, false); assert.equal(by.HYPE.maxLeverage, 10, 'leverage from the venue metadata');
+    assert.equal(by.SNDK.executable, true); assert.equal(by.SNDK.execution.venueAssetId, 120000, 'Trade.xyz HIP-3 id = 100000 + 2*10000 + index'); assert.equal(by.SNDK.execution.venueCoin, 'xyz:SNDK');
+    assert.equal(by.ZEC.executable, false); assert.equal(by.ZEC.execution.blocker, 'delisted on Hyperliquid mainnet');
+    for (const k of ['JUP', 'NEAR', 'BNB', 'SPCX', 'SKHYNIX']) { assert.equal(by[k].executable, false, k); assert.equal(by[k].execution.blocker, 'not_in_HL_VERIFIED_MARKETS', k); assert.equal(by[k].viewOnly, true, k); }
+    for (const k of ['SOL', 'ETH', 'BTC']) { assert.equal(by[k].executable, true, k); assert.equal(by[k].execution.adapter, 'jupiter-perps-solana'); assert.ok(by[k].execution.venueAssetId, k + ' custody account'); }
+  } finally { await e.drop(); }
+});
+
+test('r132 Hyperliquid unreachable -> HL markets report executable:false with blocker hyperliquid_unreachable (never assumed ready)', opts, async () => {
+  const e = await boot({ env: { HL_EXECUTION_ENABLED: '1', HL_VERIFIED_MARKETS: 'HYPE' } }); try {
+    await cycle(e); await e.view.tick(); e.S.mode.ctx = 'fail';
+    const by = Object.fromEntries((await markets(e)).map(r => [r.market, r]));
+    assert.equal(by.HYPE.executable, false); assert.equal(by.HYPE.execution.blocker, 'hyperliquid_unreachable');
+  } finally { await e.drop(); }
+});
+
+test('r132 24 h stats: the venue\'s own 1 h candles (basis hyperliquid_candles_1h) only with 24 complete hours; a gap -> null, never filled', opts, async () => {
+  const H = 3600000;
+  const mk = gap => req => { const end = Math.floor(req.endTime / H) * H, out = [];
+    for (let i = 24; i >= 0; i--) { if (gap && i === 7) continue; const t = end - i * H; out.push({ t, T: t + H - 1, s: req.coin, i: '1h', o: String(30 + i * 0.01), c: '31', h: String(32 + (i === 5 ? 1 : 0)), l: String(29 - (i === 9 ? 1 : 0)), v: '100', n: 10 }); }
+    return out; };
+  const e = await boot({ before: S => { S.candles = mk(false); } }); try {
+    await cycle(e); await e.view.tick();
+    const h = (await markets(e)).find(r => r.market === 'HYPE');
+    assert.equal(h.stats24h.basis, 'hyperliquid_candles_1h'); assert.equal(h.stats24h.hours, 24); assert.equal(h.stats24h.high, 33); assert.equal(h.stats24h.low, 28); assert.equal(h.stats24h.open, 30.24);
+    assert.equal(h.stats24h.last, h.price); assert.equal(h.change24h, null, 'stats24h supersedes the previous-day reference');
+    assert.ok(e.S.candleReqs.every(r => r.interval === '1h'), 'one interval only');
+  } finally { await e.drop(); }
+  const g = await boot({ before: S => { S.candles = mk(true); } }); try {
+    await cycle(g); await g.view.tick();
+    const h = (await markets(g)).find(r => r.market === 'HYPE');
+    assert.equal(h.stats24h, null, 'a missing hour -> no 24 h stats'); assert.equal(h.change24h.basis, 'hyperliquid_prevDayPx', 'falls back to the venue previous-day reference');
+  } finally { await g.drop(); }
 });
