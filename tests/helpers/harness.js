@@ -7,7 +7,7 @@ import { loadConfig, MARKETS } from '../../src/config.js';
 import { createApp } from '../../src/app.js';
 import { migrate } from '../../src/db.js';
 
-export const MIG = ['001_init.sql', '002_exec_idempotency.sql', '003_view_only_markets.sql', '004_hl_exec_audit.sql', '005_hl_funding.sql'].map(name => ({ name, sql: readFileSync(new URL('../../migrations/' + name, import.meta.url), 'utf8') }));
+export const MIG = ['001_init.sql', '002_exec_idempotency.sql', '003_view_only_markets.sql', '004_hl_exec_audit.sql', '005_hl_funding.sql', '006_saturn_fee.sql'].map(name => ({ name, sql: readFileSync(new URL('../../migrations/' + name, import.meta.url), 'utf8') }));
 export const START = Date.UTC(2026, 10, 16, 0, 0, 0);      /* aligned to every timeframe */
 
 export async function makeEnv({ taps = {}, env = {}, cfgOverrides = {}, prices, start = START, db = null, clock = null, jup = null, init = true } = {}) {
