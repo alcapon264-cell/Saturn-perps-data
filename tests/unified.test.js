@@ -1,0 +1,143 @@
+/* r124 ONE market pipeline for 11 markets: one contract, provider attribution, per-adapter independence, failure isolation, rate limits,
+ * wrong timestamps, restart recovery, candle isolation, WebSocket isolation.
+ * [MOCK Jupiter + MOCK Hyperliquid (main + xyz) + MOCK CoinGecko, REAL PostgreSQL, fake clock, real HTTP + WebSocket sockets]. No network. */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import WebSocket from 'ws';
+import { clusterUp, attachTestDb } from './helpers/pg-local.js';
+import { makeEnv, MARKETS } from './helpers/harness.js';
+import { fakeSources } from './helpers/fake-providers.js';
+import { REGISTRY, CONTRACT_FIELDS } from '../src/markets.js';
+
+const HAVE = clusterUp(); const opts = { skip: HAVE ? false : 'no local PostgreSQL available' };
+const CG_KEY = 'test-only-cg-demo-key-not-real';
+const ALL11 = ['SOL', 'ETH', 'BTC', 'HYPE', 'ZEC', 'JUP', 'SNDK', 'SPCX', 'NEAR', 'SKHYNIX', 'BNB'];
+const VIEW = ALL11.slice(3);
+
+async function boot({ env = {}, before, db = null, clock = null } = {}) {
+  const S = fakeSources(); if (before) before(S);
+  const e = await makeEnv({ jup: S.jup, db, clock, env: { VIEW_MARKETS: VIEW.join(','), COINGECKO_DEMO_KEY: CG_KEY, ...env }, init: false });
+  S.clock = e.clock; await e.app.init(); e.S = S; e.view = e.parts.view; return e;
+}
+/* one full cycle: the Jupiter recorder (3 markets, staggered across 15 s) and the view recorder (8 markets, one slot) */
+const cycle = async e => { await e.clock.advance(15000); await e.app.idle(); };
+const markets = async e => { const port = e._port || (e._port = await e.app.start({ port: 0, host: '127.0.0.1' })); return (await (await fetch('http://127.0.0.1:' + port + '/v1/perps/markets')).json()).markets; };
+const count = async (e, table, m) => (await e.db.rows(`SELECT count(*)::int n FROM ${table} WHERE market='${m}'`))[0].n;
+
+test('registry: 11 markets, identity/provider/venue/eligibility fixed in code; only SOL/ETH/BTC executable; JUP the token is a Hyperliquid view market, not Jupiter Perps', () => {
+  assert.deepEqual(Object.keys(REGISTRY), ALL11);
+  for (const k of ['SOL', 'ETH', 'BTC']) assert.deepEqual([REGISTRY[k].provider, REGISTRY[k].venue, REGISTRY[k].executable, REGISTRY[k].viewOnly], ['jupiter-perps', 'jupiter-perps', true, false], k);
+  for (const k of VIEW) { assert.equal(REGISTRY[k].provider, 'hyperliquid', k); assert.equal(REGISTRY[k].executable, false, k); assert.equal(REGISTRY[k].viewOnly, true, k); assert.equal(REGISTRY[k].priceKind, 'hyperliquid_perp_mid'); }
+  assert.deepEqual(['SNDK', 'SPCX', 'SKHYNIX'].map(k => REGISTRY[k].venue), ['hyperliquid:xyz', 'hyperliquid:xyz', 'hyperliquid:xyz'], 'stocks: perp prices on Trade.xyz, not stock reference prices');
+  assert.equal(REGISTRY.JUP.providerMarketId, 'JUP'); assert.notEqual(REGISTRY.JUP.provider, 'jupiter-perps', 'the JUP token is not Jupiter Perps');
+  assert.equal(REGISTRY.SOL.providerMarketId, MARKETS.SOL);
+});
+
+test('ONE contract: all 11 rows carry exactly the same fields, with provider, venue, source, price kind, state, category, eligibility and view-only status', opts, async () => {
+  const e = await boot(); try {
+    await cycle(e); await e.view.tick();
+    const rows = await markets(e);
+    assert.deepEqual(rows.map(r => r.market), ALL11);
+    for (const r of rows) assert.deepEqual(Object.keys(r).sort(), [...CONTRACT_FIELDS].sort(), r.market);
+    const by = Object.fromEntries(rows.map(r => [r.market, r]));
+    for (const k of ['SOL', 'ETH', 'BTC']) { assert.equal(by[k].source, 'jupiter-perps:market-stats'); assert.equal(by[k].provider, 'jupiter-perps'); assert.equal(by[k].executable, true); assert.equal(by[k].viewOnly, false); }
+    for (const k of VIEW) { assert.equal(by[k].source, 'hyperliquid:allMids'); assert.equal(by[k].provider, 'hyperliquid'); assert.equal(by[k].executable, false); assert.equal(by[k].viewOnly, true); }
+    for (const r of rows) { assert.equal(r.volume24h, null); assert.equal(r.openInterest, null); assert.ok(['ok', 'no_data', 'down', 'unavailable', 'stale'].includes(r.status) || typeof r.status === 'string', r.market); }
+  } finally { await e.drop(); }
+});
+
+test('each adapter independently: every market shows ITS OWN provider price (11 different scripted values)', opts, async () => {
+  const e = await boot({ before: S => { S.mids.ZEC = '409.75'; S.xmids['xyz:SPCX'] = '149.75'; } }); try {
+    for (let i = 0; i < 2; i++) await cycle(e);
+    await e.view.tick();
+    const by = Object.fromEntries((await markets(e)).map(r => [r.market, r.price]));
+    assert.deepEqual(by, { SOL: 150, ETH: 3000, BTC: 90000, HYPE: 31.5, ZEC: 409.75, JUP: 0.512, SNDK: 655.5, SPCX: 149.75, NEAR: 2.64, SKHYNIX: 1210, BNB: 905.3 });
+  } finally { await e.drop(); }
+});
+
+test('failure isolation: Hyperliquid fully down -> SOL/ETH/BTC keep recording; Jupiter down for SOL -> ETH/BTC and all 8 view markets keep recording', opts, async () => {
+  const e = await boot(); try {
+    await cycle(e);
+    const sol0 = await count(e, 'perps_observations', 'SOL'), hype0 = await count(e, 'perps_view_observations', 'HYPE');
+    e.S.mode.hl = 'network'; e.S.mode.ctx = 'fail';
+    for (let i = 0; i < 4; i++) await cycle(e);
+    assert.ok(await count(e, 'perps_observations', 'SOL') >= sol0 + 3, 'Jupiter markets unaffected by a Hyperliquid outage');
+    assert.equal(await count(e, 'perps_view_observations', 'HYPE'), hype0, 'nothing recorded for view markets while their provider is down');
+    e.S.mode.hl = 'ok'; e.S.mode.ctx = 'ok'; e.S.jup.mode[MARKETS.SOL] = 'http500';
+    for (let i = 0; i < 12; i++) await cycle(e);   /* long enough for the view recorder's back-off to expire */
+    const sol1 = await count(e, 'perps_observations', 'SOL'), eth1 = await count(e, 'perps_observations', 'ETH');
+    for (let i = 0; i < 3; i++) await cycle(e);
+    assert.equal(await count(e, 'perps_observations', 'SOL'), sol1, 'SOL failing');
+    assert.ok(await count(e, 'perps_observations', 'ETH') > eth1, 'ETH continues');
+    for (const k of VIEW) assert.ok(await count(e, 'perps_view_observations', k) > 0, k + ' recovered and recording');
+  } finally { await e.drop(); }
+});
+
+test('rate limits: a Hyperliquid 429 backs the view recorder off (no hammering) and never touches the Jupiter budget', opts, async () => {
+  const e = await boot(); try {
+    await cycle(e);
+    const jup0 = e.S.jupCalls; e.S.mode.hl = 'http500';
+    const n0 = e.S.hl.filter(x => x.type === 'allMids').length;
+    for (let i = 0; i < 8; i++) await cycle(e);   /* 2 minutes */
+    const n1 = e.S.hl.filter(x => x.type === 'allMids').length;
+    assert.ok(n1 - n0 <= 8, 'failing provider is backed off: ' + (n1 - n0) + ' allMids requests in 2 minutes (one market set per request)');
+    assert.ok(e.S.jupCalls - jup0 >= 20, 'Jupiter recorder keeps its own cadence');
+  } finally { await e.drop(); }
+});
+
+test('wrong timestamps: a CoinGecko reading dated in the future or hours old is not accepted as a cross-check (price hidden once the last good check expires)', opts, async () => {
+  const e = await boot(); try {
+    await cycle(e);
+    for (const [label, when] of [['future', () => e.clock.now() + 3600e3], ['old', () => e.clock.now() - 3 * 3600e3]]) {
+      e.S.cgRows = { hyperliquid: { id: 'hyperliquid', symbol: 'hype', name: 'Hyperliquid', image: null, current_price: 31.4, last_updated: new Date(when()).toISOString() } };
+      for (let i = 0; i < 5; i++) { e.clock.jump(5 * 60 * 1000); await e.view.tick(); await cycle(e); }
+      const h = (await e.view.marketsView()).find(r => r.market === 'HYPE');
+      assert.equal(h.price, null, label); assert.equal(h.status, 'not_cross_checked', label);
+    }
+  } finally { await e.drop(); }
+});
+
+test('restart recovery: a new process on the same database keeps every market\'s own history and candles, and resumes recording', opts, async () => {
+  const e = await boot(); let e2 = null;
+  try {
+    for (let i = 0; i < 6; i++) await cycle(e);
+    const before = Object.fromEntries(await Promise.all(VIEW.map(async k => [k, await count(e, 'perps_view_observations', k)])));
+    const candles0 = (await e.db.rows('SELECT count(*)::int n FROM perps_view_candles'))[0].n;
+    await e.app.parts.recorder.stop(); await e.view.stopLeader(); await e.app.parts.db.releaseLeader();   /* the old process exits (its database session stays open only for this test's cleanup) */
+    e2 = await boot({ db: attachTestDb(e.db), clock: e.clock });   /* a NEW process: new session on the SAME database */
+    for (const k of VIEW) assert.ok(await count(e, 'perps_view_observations', k) >= before[k], k + ' history kept');
+    assert.ok((await e.db.rows('SELECT count(*)::int n FROM perps_view_candles'))[0].n >= candles0, 'candles kept');
+    for (let i = 0; i < 3; i++) await cycle(e2);
+    for (const k of VIEW) assert.ok(await count(e, 'perps_view_observations', k) > before[k], k + ' resumes');
+  } finally { if (e2) await e2.stop(); await e.drop(); }
+});
+
+test('candle isolation: every candle of every market is built only from that market\'s own observations, in that market\'s own table', opts, async () => {
+  const e = await boot(); try {
+    for (let i = 0; i < 10; i++) await cycle(e);
+    e.clock.jump(120000); await e.view.tick(); for (const m of ['SOL', 'ETH', 'BTC']) await e.parts.engine.finalizeDue(m);
+    for (const [obs, cnd] of [['perps_observations', 'perps_candles'], ['perps_view_observations', 'perps_view_candles']]) {
+      const bad = await e.db.rows(`SELECT c.market, c.tf, c.bucket_start FROM ${cnd} c WHERE c.tf='1m' AND (c.h > (SELECT max(price) FROM ${obs} o WHERE o.market=c.market) OR c.l < (SELECT min(price) FROM ${obs} o WHERE o.market=c.market))`);
+      assert.deepEqual(bad, [], cnd + ': a candle outside its own market\'s observed range');
+    }
+    const core = (await e.db.rows("SELECT DISTINCT market FROM perps_candles ORDER BY 1")).map(r => r.market), view = (await e.db.rows("SELECT DISTINCT market FROM perps_view_candles ORDER BY 1")).map(r => r.market);
+    assert.deepEqual(core, ['BTC', 'ETH', 'SOL']); assert.deepEqual(view, [...VIEW].sort());
+  } finally { await e.drop(); }
+});
+
+test('WebSocket isolation: a client gets ticks only for markets it subscribed to, each tagged with its own provider and source', opts, async () => {
+  const e = await boot(); try {
+    await cycle(e); await e.view.tick();
+    const port = await e.app.start({ port: 0, host: '127.0.0.1' }); e._port = port;
+    const open = async subs => { const ws = new WebSocket('ws://127.0.0.1:' + port + '/perps/live'); const msgs = []; ws.on('message', d => msgs.push(JSON.parse(d))); await new Promise(r => ws.on('open', r)); ws.send(JSON.stringify({ type: 'subscribe', markets: subs })); return { ws, msgs }; };
+    const a = await open(['SOL']), b = await open(['HYPE', 'SNDK']);
+    await new Promise(r => setTimeout(r, 100));
+    for (let i = 0; i < 2; i++) await cycle(e);
+    await new Promise(r => setTimeout(r, 100));
+    const ta = a.msgs.filter(m => m.type === 'perps_tick'), tb = b.msgs.filter(m => m.type === 'perps_tick');
+    assert.ok(ta.length && ta.every(m => m.market === 'SOL' && m.provider === 'jupiter-perps' && m.source === 'jupiter-perps:market-stats'), JSON.stringify(ta.slice(0, 2)));
+    assert.ok(tb.length && tb.every(m => ['HYPE', 'SNDK'].includes(m.market) && m.provider === 'hyperliquid' && m.source === 'hyperliquid:allMids'), JSON.stringify(tb.slice(0, 2)));
+    assert.ok(new Set(tb.map(m => m.market)).size === 2, 'both subscribed view markets tick');
+    a.ws.close(); b.ws.close();
+  } finally { await e.drop(); }
+});

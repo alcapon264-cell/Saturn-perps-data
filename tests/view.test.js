@@ -74,7 +74,9 @@ test('config: unknown VIEW_MARKETS entries are reported, the Hyperliquid base an
   const c = loadConfig({ DATABASE_URL: 'x', VIEW_MARKETS: 'HYPE,DOGE,SNDK', COINGECKO_DEMO_KEY: CG_KEY });
   assert.deepEqual([...c.view.markets], ['HYPE', 'SNDK']); assert.ok(validateConfig(c).some(x => /DOGE/.test(x)));
   assert.ok(validateConfig(loadConfig({ DATABASE_URL: 'x', VIEW_MARKETS: 'HYPE', HYPERLIQUID_INFO_BASE: 'https://evil.example' })).some(x => /HYPERLIQUID_INFO_BASE/.test(x)));
-  assert.throws(() => createHyperliquidClient({ base: 'https://evil.example' })); assert.throws(() => createCoinGeckoClient({ base: 'https://evil.example', key: 'k' })); assert.throws(() => createCoinGeckoClient({ key: '' }));
+  assert.throws(() => createHyperliquidClient({ base: 'https://evil.example' })); assert.throws(() => createCoinGeckoClient({ base: 'https://evil.example', key: 'k' })); assert.doesNotThrow(() => createCoinGeckoClient({ key: '' }), 'r125: the key is optional (public endpoint)');
+  assert.deepEqual([...loadConfig({ DATABASE_URL: 'x' }).view.markets], ['HYPE', 'ZEC', 'JUP', 'SNDK', 'SPCX', 'NEAR', 'SKHYNIX', 'BNB'], 'r125: VIEW_MARKETS unset -> all eight (no Render setting needed)');
+  assert.deepEqual([...loadConfig({ DATABASE_URL: 'x', VIEW_MARKETS: 'off' }).view.markets], [], 'VIEW_MARKETS=off -> none');
   await assert.rejects(createHyperliquidClient({ fetchImpl: async () => J({}) }).allMids('evil'), /dex_not_allowed/, 'only the main and xyz market sets can be requested');
   for (const k of Object.keys(VIEW_MARKET_TABLE)) assert.ok(!(k in MARKETS), k + ' is not an executable market');
   assert.deepEqual(Object.keys(VIEW_MARKET_TABLE).filter(k => VIEW_MARKET_TABLE[k].category === 'stock').sort(), ['SKHYNIX', 'SNDK', 'SPCX']);
@@ -159,14 +161,20 @@ test('honest status: a coin missing or delisted on Hyperliquid, or a wrong CoinG
   } finally { await e.drop(); }
 });
 
-test('without a CoinGecko key: crypto view markets are listed as unavailable (never recorded); equities still work (oracle check)', opts, async () => {
-  const e = await boot({ key: '' }); try {
-    await slot(e); assert.equal(e.S.cg.length, 0);
+test('r125 without a CoinGecko key (today\'s Render config): all 8 markets are listed AND priced; crypto checked against the Hyperliquid oracle; identity + logos from the public CoinGecko endpoint, no key sent', opts, async () => {
+  const e = await boot({ key: '', env: { VIEW_MARKETS: '' } }); try {
+    await slot(e);
     const by = Object.fromEntries((await e.view.marketsView()).map(x => [x.market, x]));
-    for (const k of CRYPTO) { assert.equal(by[k].price, null, k); assert.equal(by[k].status, 'cross_check_not_configured'); }
-    for (const k of STOCKS) assert.ok(by[k].price > 0, k);
-    assert.deepEqual((await e.db.rows('SELECT DISTINCT market FROM perps_view_observations ORDER BY 1')).map(r => r.market), ['SKHYNIX', 'SNDK', 'SPCX']);
-    assert.ok(e.logs.some(l => /COINGECKO_DEMO_KEY missing/.test(l))); assert.ok(e.S.jupCalls > 0, 'the SOL/ETH/BTC recorder keeps running');
+    assert.deepEqual(Object.keys(by), ALL);
+    for (const k of ALL) { assert.ok(by[k].price > 0, k); assert.equal(by[k].crossCheck.source, 'hyperliquid-oracle', k); assert.equal(by[k].crossCheck.ok, true, k); }
+    for (const k of CRYPTO) assert.equal(by[k].icon, '/v1/perps/logos/' + k, k + ' logo from the verified (keyless) CoinGecko image');
+    assert.equal(e.S.cg.length, 1, 'one public call at start'); assert.ok(!e.S.cg[0].headers['x-cg-demo-api-key'], 'no key header');
+    assert.deepEqual((await e.db.rows('SELECT DISTINCT market FROM perps_view_observations ORDER BY 1')).map(r => r.market), [...ALL].sort());
+    for (let i = 0; i < 25; i++) { await slot(e); await e.view.tick(); }
+    assert.equal(e.S.cg.length, 1, 'public endpoint used at most every 6 h');
+    e.S.oracle.HYPE = '40.00'; e.clock.jump(60000); await e.view.tick();
+    assert.equal((await e.view.marketsView()).find(x => x.market === 'HYPE').status, 'sources_disagree', 'a crypto market far from its oracle is hidden');
+    assert.ok(e.S.jupCalls > 0, 'the SOL/ETH/BTC recorder keeps running');
   } finally { await e.drop(); }
 });
 
@@ -316,13 +324,13 @@ test('r122 contract + deploy audit: SOL/ETH/BTC are never flagged view-only; the
     const r = await (await fetch('http://127.0.0.1:' + port + '/v1/perps/markets')).json();
     assert.deepEqual(r.build, { commit: '0235ff3abcde', viewMarketsConfigured: true, crossCheckConfigured: true });
     assert.ok(!JSON.stringify(r).includes(CG_KEY), 'the key is never in the response');
-    for (const x of r.markets.slice(0, 3)) { assert.equal(x.executable, true, x.market); assert.ok(!('viewOnly' in x), x.market + ' has no viewOnly flag'); assert.equal(x.category, 'major'); }
+    for (const x of r.markets.slice(0, 3)) { assert.equal(x.executable, true, x.market); assert.equal(x.viewOnly, false, x.market); assert.equal(x.provider, 'jupiter-perps'); assert.equal(x.category, 'major'); }
     for (const x of r.markets.slice(3)) assert.equal(x.viewOnly, true, x.market);
   } finally { await e.drop(); }
-  const e2 = await boot({ markets: '', key: '' }); try {
+  const e2 = await boot({ markets: 'off', key: '' }); try {
     const port = await e2.app.start({ port: 0, host: '127.0.0.1' });
     const r = await (await fetch('http://127.0.0.1:' + port + '/v1/perps/markets')).json();
-    assert.deepEqual(r.markets.map(x => x.market), ['SOL', 'ETH', 'BTC'], 'VIEW_MARKETS unset: exactly the three recorded markets (what staging returns today)');
+    assert.deepEqual(r.markets.map(x => x.market), ['SOL', 'ETH', 'BTC'], 'VIEW_MARKETS=off: exactly the three recorded markets');
     assert.deepEqual(r.build, { commit: null, viewMarketsConfigured: false, crossCheckConfigured: false });
   } finally { await e2.drop(); }
 });

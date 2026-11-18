@@ -50,7 +50,7 @@ test('ticks: sent only for NEW accepted observations of subscribed markets; seq 
     assert.ok(ta.length >= 4 && ta.every(t => t.market === 'SOL')); assert.ok(tb.every(t => t.market === 'ETH'));
     assert.deepEqual(ta.map(t => t.seq), ta.map((_, i) => i + 1), 'seq strictly increasing from 1');
     assert.ok(ta.every(t => t.price === 150 && t.source === 'jupiter-perps:market-stats' && Number.isInteger(t.observedAt) && !('persisted' in t)));
-    assert.deepEqual(Object.keys(ta[0]).sort(), ['market', 'observedAt', 'price', 'seq', 'source', 'type']);
+    assert.deepEqual(Object.keys(ta[0]).sort(), ['market', 'observedAt', 'price', 'provider', 'seq', 'source', 'type']); assert.equal(ta[0].provider, 'jupiter-perps');   /* r124: provider added (additive; clients ignore unknown fields) */
   } finally { await e.cleanup(); }
 });
 

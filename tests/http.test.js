@@ -1,5 +1,6 @@
 /* Read-only HTTP API over a real socket. [MOCK network, REAL database] */
 import test from 'node:test';
+import { CONTRACT_FIELDS } from '../src/markets.js';
 import assert from 'node:assert/strict';
 import { clusterUp } from './helpers/pg-local.js';
 import { makeEnv, seedHistory, START, MARKETS } from './helpers/harness.js';
@@ -175,7 +176,7 @@ test('responses never contain more than the documented fields (no raw upstream p
   const e = await boot(); try {
     await seedHistory(e, 'SOL', START, START + 3 * HOUR);
     const m = await json(await e.get('/v1/perps/markets'));
-    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), ['ageMs', 'category', 'executable', 'icon', 'market', 'maxLeverage', 'mint', 'name', 'observedAt', 'openInterest', 'price', 'state', 'stats24h', 'symbol', 'volume24h']);   /* r119 fields */
+    for (const k of m.body.markets) assert.deepEqual(Object.keys(k).sort(), [...CONTRACT_FIELDS].sort());   /* r124: one contract for every market (r119 fields + provider/source/status fields) */
     assert.ok(!JSON.stringify(m.body).includes('priceChange24H'));
   } finally { await e.drop(); }
 });
