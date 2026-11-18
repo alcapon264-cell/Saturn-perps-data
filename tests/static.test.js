@@ -86,5 +86,15 @@ test('WebSocket is a separate path on this service; the spot path is not served'
 });
 
 test('migrations are additive and forward-only (no DROP/TRUNCATE/ALTER ... DROP)', () => {
-  for (const [f, t] of Object.entries(all)) if (/^migrations\//.test(f)) assert.ok(!/\b(DROP|TRUNCATE)\b/i.test(t.replace(/--.*$/gm, '')), f);
+  /* r131: the ONLY allowed DROP is replacing the audit table's action_type CHECK with a strictly wider one in the same migration (no data can be lost) */
+  const WIDEN = /ALTER TABLE perps_hl_requests DROP CONSTRAINT IF EXISTS perps_hl_requests_action_type_check;/g;
+  for (const [f, t] of Object.entries(all)) if (/^migrations\//.test(f)) {
+    const body = t.replace(/--.*$/gm, '');
+    if (WIDEN.test(body)) {
+      const vals = x => new Set((x.match(/action_type IN \(([^)]*)\)/) || [, ''])[1].split(',').map(v => v.trim()));
+      const before = vals(all['migrations/004_hl_exec_audit.sql']), after = vals(body.slice(body.indexOf('ADD CONSTRAINT perps_hl_requests_action_type_check')));
+      assert.ok(before.size > 1 && [...before].every(v => after.has(v)) && after.size > before.size, f + ' may only widen action_type');
+    }
+    assert.ok(!/\b(DROP|TRUNCATE)\b/i.test(body.replace(WIDEN, '')), f);
+  }
 });

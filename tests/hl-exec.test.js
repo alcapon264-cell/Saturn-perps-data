@@ -15,7 +15,7 @@ const HAVE = clusterUp(); const opts = { skip: HAVE ? false : 'no local PostgreS
 const USERK = H.newPrivateKey(), USER = H.addressOf(USERK), AGENTK = H.newPrivateKey(), AGENT = H.addressOf(AGENTK), OTHERK = H.newPrivateKey();
 const T0 = Date.UTC(2026, 10, 18, 12, 0, 0);
 
-function fakeHl({ acct = {}, wallet = { usdc: 20, eth: 0.001 }, receipts = {}, ledger = [], agents = [{ address: AGENT, name: 'saturn', validUntil: T0 + 86400000 }], mids = { HYPE: '38.10', ZEC: '410', JUP: '0.52', NEAR: '2.5', BNB: '905', 'xyz:SNDK': '655.5', 'xyz:SPCX': '120', 'xyz:SKHYNIX': '600' }, exchangeReply = null } = {}) {
+function fakeHl({ builders = {}, acct = {}, wallet = { usdc: 20, eth: 0.001 }, receipts = {}, ledger = [], agents = [{ address: AGENT, name: 'saturn', validUntil: T0 + 86400000 }], mids = { HYPE: '38.10', ZEC: '410', JUP: '0.52', NEAR: '2.5', BNB: '905', 'xyz:SNDK': '655.5', 'xyz:SPCX': '120', 'xyz:SKHYNIX': '600' }, exchangeReply = null } = {}) {
   const sent = [], infos = [];
   const MAIN = [{ name: 'BTC', szDecimals: 5, maxLeverage: 40 }, { name: 'HYPE', szDecimals: 2, maxLeverage: 10 }, { name: 'ZEC', szDecimals: 2, maxLeverage: 10 }, { name: 'JUP', szDecimals: 0, maxLeverage: 10 }, { name: 'NEAR', szDecimals: 1, maxLeverage: 10 }, { name: 'BNB', szDecimals: 3, maxLeverage: 10 }];
   const XYZ = [{ name: 'xyz:TSLA', szDecimals: 3, maxLeverage: 10, onlyIsolated: true }, { name: 'xyz:SNDK', szDecimals: 2, maxLeverage: 10, onlyIsolated: true }, { name: 'xyz:SPCX', szDecimals: 2, maxLeverage: 5, onlyIsolated: true }, { name: 'xyz:SKHYNIX', szDecimals: 2, maxLeverage: 5, onlyIsolated: true }];
@@ -32,6 +32,7 @@ function fakeHl({ acct = {}, wallet = { usdc: 20, eth: 0.001 }, receipts = {}, l
       const A = { mode: 'disabled', main: 0, xyz: 0, spot: 0, used: 0, ...acct };
       const cs = (v, used) => ({ marginSummary: { accountValue: String(v), totalMarginUsed: String(used) }, withdrawable: String(Math.max(0, v - used)), assetPositions: [] });
       if (b.type === 'userAbstraction') return J(A.mode);
+      if (b.type === 'clearinghouseState' && builders[String(b.user).toLowerCase()] != null) return J(cs(builders[String(b.user).toLowerCase()], 0));   /* r131 Saturn fee wallet */
       if (b.type === 'clearinghouseState') return J(b.dex === 'xyz' ? cs(A.xyz, 0) : cs(A.main, A.used));
       if (b.type === 'spotClearinghouseState') return J({ balances: [{ coin: 'USDC', token: 0, total: String(A.spot), hold: '0' }] });
       if (b.type === 'frontendOpenOrders') return J([]);
@@ -147,11 +148,11 @@ test('reduce-only close is allowed on an unverified market and above the size ca
 
 test('action allowlist: usdSend / spotSend / builder fee / abstraction change / vault are refused; extra fields refused', opts, async t => {
   const S = await setup(t);
-  for (const type of ['usdSend', 'spotSend', 'approveBuilderFee', 'userSetAbstraction', 'vaultTransfer', 'createSubAccount']) {
+  for (const type of ['usdSend', 'spotSend', 'userSetAbstraction', 'vaultTransfer', 'createSubAccount']) {
     const r = await S.call(l1({ type, amount: '1' }, S.now())); assert.equal(r.body.error, 'action_not_allowed', type);
   }
-  const bad = l1(order(), S.now()); bad.action.builder = { b: USER, f: 10 };
-  assert.equal((await S.call(bad)).body.error, 'bad_action');
+  const bad = l1({ ...order(), builder: { b: USER, f: 10 } }, S.now());
+  assert.equal((await S.call(bad)).body.error, 'builder_not_allowed', 'r131: no builder fee to anyone but Saturn\'s own fee wallet');
   const extra = l1(order(), S.now()); extra.expiresAfter = 1;
   assert.equal((await S.call(extra)).code, 400);
   assert.equal(S.F.sent.length, 0);
@@ -272,4 +273,58 @@ test('r129 funding: verified on Arbitrum, recorded pending (counted nowhere), cr
 test('r129 funding registration is behind the execution switch', opts, async t => {
   const S = await setup(t, { enabled: false });
   assert.equal((await P(S, '/v1/perps/hl/funding', { user: USER, txHash: '0x' + 'a1'.repeat(32), amount: 25 })).code, 403);
+});
+
+/* ---------- r131 global Saturn platform fee (0.06%) via Hyperliquid builder codes ---------- */
+const FEEK = H.newPrivateKey(), FEEW = H.addressOf(FEEK);
+const withB = (act, b = { b: FEEW, f: 60 }) => ({ ...act, builder: b });
+const abf = (over = {}, n) => ({ type: 'approveBuilderFee', signatureChainId: '0xa4b1', hyperliquidChain: 'Mainnet', maxFeeRate: '0.06%', builder: FEEW, nonce: n, ...over });
+const ABF_TYPES = [{ name: 'hyperliquidChain', type: 'string' }, { name: 'maxFeeRate', type: 'string' }, { name: 'builder', type: 'address' }, { name: 'nonce', type: 'uint64' }];
+
+test('r131 fee wallet set + funded: every order must carry exactly {b: Saturn fee wallet, f: 60}; it is forwarded with the builder field', opts, async t => {
+  const S = await setup(t, { env: { SATURN_PERPS_FEE_WALLET_EVM: FEEW.toUpperCase().replace('0X', '0x') }, hl: { builders: { [FEEW]: 150 } } });
+  const [, cfg] = await S.gw.handle({ method: 'GET', headers: {} }, '/v1/perps/hl/config', null, '1.1.1.1');
+  assert.deepEqual({ ...cfg.saturnFee }, { bps: 6, rate: 0.0006, percent: '0.06%', mechanism: 'hyperliquid-builder-code', builder: FEEW, builderTenthsBp: 60, collecting: true, reason: null });
+  const n = () => S.now() + Math.floor(Math.random() * 1000);
+  const cases = [
+    [l1(order({ c: '0x' + '11'.repeat(16) }), n()), 400, 'saturn_fee_required'],
+    [l1(withB(order({ c: '0x' + '12'.repeat(16) }), { b: USER, f: 60 }), n()), 400, 'saturn_fee_mismatch'],
+    [l1(withB(order({ c: '0x' + '13'.repeat(16) }), { b: FEEW, f: 100 }), n()), 400, 'saturn_fee_mismatch'],
+    [l1(withB(order({ c: '0x' + '14'.repeat(16) }), { b: FEEW, f: 59 }), n()), 400, 'saturn_fee_mismatch'],
+    [l1(order({ r: true, c: '0x' + '15'.repeat(16) }), n()), 400, 'saturn_fee_required'],   /* closing side pays too (per executed side) */
+  ];
+  for (const [b, code, err] of cases) { const r = await S.call(b); assert.equal(r.code, code, err + ' -> ' + JSON.stringify(r.body)); assert.equal(r.body.error, err); }
+  assert.equal(S.F.sent.length, 0);
+  const ok = l1(withB(order({ c: '0x' + '16'.repeat(16) })), n());
+  const r = await S.call(ok); assert.equal(r.code, 200, JSON.stringify(r.body));
+  assert.deepEqual(Object.keys(S.F.sent[0].action), ['type', 'orders', 'grouping', 'builder'], 'official SDK key order');
+  assert.deepEqual(S.F.sent[0].action.builder, { b: FEEW, f: 60 });
+  const rows = await S.e.db.rows("SELECT saturn_fee_tenths_bp FROM perps_hl_requests WHERE state = 'submitted'"); assert.equal(rows[0].saturn_fee_tenths_bp, 60, 'audited');
+});
+
+test('r131 approveBuilderFee: only Saturn\'s fee wallet at exactly "0.06%", signed by the user\'s own wallet', opts, async t => {
+  const S = await setup(t, { env: { SATURN_PERPS_FEE_WALLET_EVM: FEEW }, hl: { builders: { [FEEW]: 150 } } });
+  const sign = (a, k) => userSigned(a, ABF_TYPES, 'HyperliquidTransaction:ApproveBuilderFee', k);
+  const n = () => S.now() + Math.floor(Math.random() * 1000);
+  let x = n(); assert.equal((await S.call(sign(abf({ builder: USER }, x)))).body.error, 'builder_not_allowed');
+  x = n(); assert.equal((await S.call(sign(abf({ maxFeeRate: '0.1%' }, x)))).body.error, 'fee_rate_mismatch');
+  x = n(); assert.equal((await S.call(sign(abf({ maxFeeRate: '0.05%' }, x)))).body.error, 'fee_rate_mismatch');
+  x = n(); assert.equal((await S.call(sign(abf({}, x), OTHERK))).body.error, 'bad_signature');
+  assert.equal(S.F.sent.length, 0);
+  x = n(); const r = await S.call(sign(abf({}, x))); assert.equal(r.code, 200, JSON.stringify(r.body));
+  assert.equal(S.F.sent[0].action.type, 'approveBuilderFee'); assert.equal(S.F.sent[0].action.builder, FEEW); assert.equal(S.F.sent[0].action.maxFeeRate, '0.06%');
+});
+
+test('r131 fee not collectable: no wallet -> no builder allowed, honest config; wallet below 100 USDC -> opening paused, closing still works without a fee', opts, async t => {
+  const S = await setup(t);
+  const [, cfg] = await S.gw.handle({ method: 'GET', headers: {} }, '/v1/perps/hl/config', null, '1.1.1.1');
+  assert.equal(cfg.saturnFee.bps, 6); assert.equal(cfg.saturnFee.collecting, false); assert.equal(cfg.saturnFee.reason, 'fee_wallet_not_set');
+  assert.equal((await S.call(l1(withB(order({ c: '0x' + '21'.repeat(16) })), S.now()))).body.error, 'builder_not_allowed', 'no builder fee to anyone when Saturn has no fee wallet');
+  const n = S.now() + 7; const ab = userSigned(abf({}, n), ABF_TYPES, 'HyperliquidTransaction:ApproveBuilderFee');
+  assert.equal((await S.call(ab)).body.error, 'fee_wallet_not_set');
+  const U = await setup(t, { env: { SATURN_PERPS_FEE_WALLET_EVM: FEEW }, hl: { builders: { [FEEW]: 40 } } });
+  const [, c2] = await U.gw.handle({ method: 'GET', headers: {} }, '/v1/perps/hl/config', null, '1.1.1.1');
+  assert.equal(c2.saturnFee.collecting, false); assert.equal(c2.saturnFee.reason, 'fee_wallet_below_100_usdc');
+  assert.equal((await U.call(l1(order({ c: '0x' + '22'.repeat(16) }), U.now()))).body.error, 'fee_wallet_unfunded');
+  const close = await U.call(l1(order({ r: true, c: '0x' + '23'.repeat(16) }), U.now() + 3)); assert.equal(close.code, 200, 'users can always exit');
 });
