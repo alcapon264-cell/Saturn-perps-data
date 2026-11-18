@@ -111,7 +111,7 @@ test('/v1/perps/markets: all 11 markets, view markets executable:false with null
     for (const x of r.markets.filter(x => x.viewOnly)) {
       assert.equal(x.executable, false); assert.equal(x.maxLeverage, null); assert.equal(x.volume24h, null); assert.equal(x.openInterest, null); assert.equal(x.mint, null);
       assert.equal(x.source, 'hyperliquid:allMids'); assert.equal(x.crossCheck.ok, true, x.market + ' ' + JSON.stringify(x.crossCheck)); assert.ok(x.price > 0, x.market); assert.equal(x.status, 'ok');
-      assert.equal(x.icon, '/v1/perps/logos/' + x.market, 'every market has a logo'); assert.equal(x.stats24h, null);
+      assert.equal(x.icon, STOCKS.includes(x.market) ? null : '/v1/perps/logos/' + x.market, 'crypto: verified CoinGecko image; stocks: no official file declared -> honest missing logo'); assert.equal(x.stats24h, null);
     }
     const by = Object.fromEntries(r.markets.map(x => [x.market, x]));
     assert.equal(by.HYPE.price, 31.5); assert.equal(by.SNDK.price, 655.5); assert.equal(by.SKHYNIX.venueCoin, 'xyz:SKHYNIX');
@@ -151,7 +151,8 @@ test('honest status: a coin missing or delisted on Hyperliquid, or a wrong CoinG
     const by = Object.fromEntries((await e.view.marketsView()).map(x => [x.market, x]));
     assert.deepEqual(Object.keys(by), ALL, 'every requested market is still listed');
     assert.deepEqual([by.ZEC.status, by.NEAR.status, by.JUP.status, by.SKHYNIX.status], ['not_listed_on_hyperliquid', 'delisted_on_hyperliquid', 'coingecko_id_mismatch', 'not_listed_on_hyperliquid']);
-    for (const k of ['ZEC', 'NEAR', 'JUP', 'SKHYNIX']) { assert.equal(by[k].price, null, k); assert.equal(by[k].state, 'unavailable'); assert.equal(by[k].change24h, null); assert.equal(by[k].icon, '/v1/perps/logos/' + k, 'identity and logo kept'); }
+    for (const k of ['ZEC', 'NEAR', 'JUP', 'SKHYNIX']) { assert.equal(by[k].price, null, k); assert.equal(by[k].state, 'unavailable'); assert.equal(by[k].change24h, null); assert.equal(by[k].name, VIEW_MARKET_TABLE[k].name, 'identity kept'); }
+    assert.equal(by.JUP.icon, null, 'a coin whose CoinGecko id is wrong never gets that id\'s image');
     assert.ok(by.HYPE.price > 0 && by.SNDK.price > 0);
     const rec = (await e.db.rows('SELECT DISTINCT market FROM perps_view_observations ORDER BY 1')).map(r => r.market); assert.deepEqual(rec, ['BNB', 'HYPE', 'SNDK', 'SPCX'], 'unavailable markets are not recorded');
     assert.deepEqual(await e.view.visibleKeys(), ['HYPE', 'SNDK', 'SPCX', 'BNB'], 'only verified markets can be streamed or charted');
@@ -231,17 +232,29 @@ test('WebSocket: verified view markets (crypto and equities) can be subscribed, 
   } finally { await e.drop(); }
 });
 
-test('logos: the files shipped with the service are served for all 11 markets without any network fetch; PNG only; unknown keys 404', opts, async () => {
+test('logos (r123): crypto logos are the verified CoinGecko images, fetched once and cached; stocks have none unless an official file is declared; no screenshot cut-out is ever served', opts, async () => {
   const e = await boot(); try {
     const port = await e.app.start({ port: 0, host: '127.0.0.1' }); const base = 'http://127.0.0.1:' + port;
-    for (const k of ['SOL', 'ETH', 'BTC', ...ALL]) {
-      const a = await fetch(base + '/v1/perps/logos/' + k); assert.equal(a.status, 200, k); assert.equal(a.headers.get('content-type'), 'image/png'); assert.match(a.headers.get('cache-control'), /max-age=86400/);
-      const b = new Uint8Array(await a.arrayBuffer()); assert.ok(b.length > 1000 && b[0] === 0x89 && b[1] === 0x50, k + ' is a real PNG');
-    }
-    assert.equal(e.S.logo.length, 0, 'bundled logos need no network');
+    for (const k of ['SOL', 'ETH', 'BTC', ...CRYPTO]) { const a = await fetch(base + '/v1/perps/logos/' + k); assert.equal(a.status, 200, k); assert.equal(a.headers.get('content-type'), 'image/png'); }
+    await fetch(base + '/v1/perps/logos/HYPE'); assert.equal(e.S.logo.filter(u => /hyperliquid/.test(u)).length, 1, 'fetched once, then cached');
+    assert.ok(e.S.logo.every(u => u.startsWith('https://coin-images.coingecko.com/')), 'only the verified CoinGecko image host');
+    for (const k of STOCKS) assert.equal((await fetch(base + '/v1/perps/logos/' + k)).status, 404, k + ': no official file declared -> no logo');
     assert.equal((await fetch(base + '/v1/perps/logos/DOGE')).status, 404);
     assert.equal((await fetch(base + '/v1/perps/logos/HYPE', { method: 'POST' })).status, 405);
   } finally { await e.drop(); }
+});
+
+test('logos (r123): a shipped file is used only when declared in SOURCES.json with its official source and matching sha256', async () => {
+  const { loadBundledLogos } = await import('../src/view.js');
+  const { mkdtempSync, writeFileSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { createHash } = await import('node:crypto');
+  const d = mkdtempSync(tmpdir() + '/logos-'); const png = Uint8Array.from([...PNG, ...new Array(64).fill(7)]);
+  writeFileSync(d + '/SNDK.png', png); writeFileSync(d + '/SPCX.png', png); writeFileSync(d + '/SKHYNIX.png', png);
+  const h = createHash('sha256').update(png).digest('hex');
+  writeFileSync(d + '/SOURCES.json', JSON.stringify([{ market: 'SNDK', source: 'https://example-official.test/brand', sha256: h }, { market: 'SPCX', source: 'https://example-official.test/brand', sha256: '0'.repeat(64) }, { market: 'SKHYNIX', sha256: h }]));
+  const m = loadBundledLogos(['SNDK', 'SPCX', 'SKHYNIX'], new URL('file://' + d + '/'));
+  assert.deepEqual([...m.keys()], ['SNDK'], 'wrong hash and missing source are refused'); assert.equal(m.get('SNDK').source, 'https://example-official.test/brand');
+  assert.equal(loadBundledLogos(['SNDK'], new URL('file://' + d + '/missing/')).size, 0, 'no manifest -> nothing');
+  const shipped = loadBundledLogos(['SOL', 'ETH', 'BTC', ...ALL]); assert.equal(shipped.size, 0, 'the repository ships no undeclared logo');
 });
 
 test('logos: without a bundled file, only a verified image on an allow-listed host is fetched (once), never anything else', opts, async () => {
@@ -295,4 +308,21 @@ test('diagnostic script (scripts/view-markets-live-check.mjs) against MOCKED sou
   assert.equal(out.allPassed, false); assert.ok(!JSON.stringify(out).includes(CG_KEY));
   const down = await runCheck({ fetchImpl: async () => { throw new TypeError('fetch failed'); }, key: CG_KEY });
   assert.match(down.reach.hyperliquid_main_contexts, /FAILED: network/); assert.ok(down.markets.every(r => r.result !== 'PASS'));
+});
+
+test('r122 contract + deploy audit: SOL/ETH/BTC are never flagged view-only; the response says which commit is running and whether VIEW_MARKETS / the cross-check key are configured (never the key itself)', opts, async () => {
+  const e = await boot({ env: { RENDER_GIT_COMMIT: '0235ff3abcdef0123456789' } }); try {
+    const port = await e.app.start({ port: 0, host: '127.0.0.1' });
+    const r = await (await fetch('http://127.0.0.1:' + port + '/v1/perps/markets')).json();
+    assert.deepEqual(r.build, { commit: '0235ff3abcde', viewMarketsConfigured: true, crossCheckConfigured: true });
+    assert.ok(!JSON.stringify(r).includes(CG_KEY), 'the key is never in the response');
+    for (const x of r.markets.slice(0, 3)) { assert.equal(x.executable, true, x.market); assert.ok(!('viewOnly' in x), x.market + ' has no viewOnly flag'); assert.equal(x.category, 'major'); }
+    for (const x of r.markets.slice(3)) assert.equal(x.viewOnly, true, x.market);
+  } finally { await e.drop(); }
+  const e2 = await boot({ markets: '', key: '' }); try {
+    const port = await e2.app.start({ port: 0, host: '127.0.0.1' });
+    const r = await (await fetch('http://127.0.0.1:' + port + '/v1/perps/markets')).json();
+    assert.deepEqual(r.markets.map(x => x.market), ['SOL', 'ETH', 'BTC'], 'VIEW_MARKETS unset: exactly the three recorded markets (what staging returns today)');
+    assert.deepEqual(r.build, { commit: null, viewMarketsConfigured: false, crossCheckConfigured: false });
+  } finally { await e2.drop(); }
 });
