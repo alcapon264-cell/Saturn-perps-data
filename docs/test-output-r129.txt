@@ -1,0 +1,256 @@
+# R129 test results. Mocked and live are kept separate. NOTHING here is a live or real-money test.
+
+## 1. Real crypto, offline: official hyperliquid-python-sdk vectors on the exact bundle in index.html
+[IIFE bundle from index129.html]
+OFFICIAL VECTORS: 22 / 22 match
+
+## 2. MOCK backend: real PostgreSQL + scripted Hyperliquid / Arbitrum
+Subtest: migrations: apply once, idempotent, checksum-protected, all tables present
+Subtest: schema: observation constraints (duplicate slot, non-positive price, unknown market)
+Subtest: schema: candle CHECK constraints enforce OHLC integrity at the storage layer
+Subtest: store: observations range query, last/first, candle upsert immutability
+Subtest: store: purge is limited to allow-listed tables and deletes in batches
+Subtest: store: SQL injection strings are inert (parameterised)
+Subtest: engine: rebuild from observations == independent oracle, for every timeframe; idempotent; complete rows frozen
+Subtest: engine: a hole in the data produces a hole in the candles (no fabrication)
+Subtest: engine: onObservation keeps forming candles current; finalizeDue closes them after bucket end + grace
+Subtest: leader lock: second session cannot take it; released/killed lock can be re-acquired
+Subtest: execution routes are OFF by default: 403 execution_disabled, body never read, Jupiter never called
+Subtest: positions: strict wallet + params, sanitized pass-through, cached, per-IP limited, upstream shape errors are honest
+Subtest: market-stats: served from the recorder only (no upstream call), fixed mints, no price when not live
+Subtest: prepare (execution enabled in TEST only): strict schema, size/type limits, Jupiter tx inspected, ticket issued
+Subtest: execute: ticket + exact message + valid wallet signature required; an allowed Origin is NOT authentication
+Subtest: execute: durable idempotency - duplicate taps / repeated submissions relay ONCE; state survives a restart
+Subtest: execute: ambiguous upstream (timeout / 5xx / malformed) -> state unknown, 202, NEVER retried; 4xx -> rejected; DB down -> not submitted
+Subtest: execute: an expired ticket is refused before anything is relayed
+Subtest: request mapping: long/short collateral mint, input amount stays in INPUT token atomic units, decrease full/partial/withdraw
+Subtest: code lock: environment flags alone cannot enable execution while the Jupiter contract is unverified
+Subtest: production switches: code constant is false, so env alone can never enable real money
+Subtest: disabled: every exchange request is refused before parsing, Hyperliquid is never contacted
+Subtest: config + mainnet market discovery (asset ids incl. HIP-3 xyz = 100000 + 2*10000 + index)
+Subtest: agent-signed IOC order on a verified market: recovered, checked, recorded, forwarded once; replay returns the stored result
+Subtest: same cloid with a new nonce (double tap after re-sign) is refused as duplicate_order
+Subtest: refusals: unapproved signer, testnet-signed, unverified market, too large, slippage, price band, size decimals, no cloid, stale nonce
+Subtest: reduce-only close is allowed on an unverified market and above the size cap (users can always exit)
+Subtest: action allowlist: usdSend / spotSend / builder fee / abstraction change / vault are refused; extra fields refused
+Subtest: user-signed: approveAgent needs a <=30 day expiry and the user's own signature; Mainnet only
+Subtest: withdraw3 only to the user's own address; sendAsset only USDC between main and xyz
+Subtest: ambiguous upstream (timeout / 5xx) is recorded unknown and never retried; exchange rejection recorded
+Subtest: rate limits per user
+Subtest: r129 TP/SL group (normalTpsl): accepted when reduce-only, opposite side, same size; refused when wrong side or size
+Subtest: r129 L1 action signed directly by the user's own Saturn Wallet (no agent) is accepted; a stranger is not
+Subtest: r129 unified balance: one number = venue collateral + Saturn Wallet Arbitrum USDC; Trade.xyz counts the main balance via move; nothing double counted
+Subtest: r129 unified-account mode uses the single spot USDC balance (no move needed)
+Subtest: r129 wallet USDC below the 5 USDC bridge minimum, or without ETH for gas, is NOT counted as available
+Subtest: r129 wallet USDC without ETH gas is not available
+Subtest: r129 funding: verified on Arbitrum, recorded pending (counted nowhere), credited only from Hyperliquid's ledger, never twice
+Subtest: r129 funding registration is behind the execution switch
+Subtest: healthz is PUBLIC and MINIMAL: only ok/service/ready, no operational detail, no secrets
+Subtest: /internal/status: does not exist unless STATUS_TOKEN is configured
+Subtest: /internal/status: token required (401), never browser-callable (403), attempts rate-limited (429), correct token returns detail without secrets
+Subtest: markets: live / stale / down / no_data; price withheld when down
+Subtest: candles: contract, ordering, completed-only default, includeForming, limit/before, valid flags, no volume field
+Subtest: candles: parameter validation matrix (fuzz)
+Subtest: r118: A.A.I.H. readiness route is gone (404); markets carry symbol, mint, executable, honest 24h stats and null volume/OI
+Subtest: CORS: allowed origin, foreign origin, no origin, preflight; write methods refused
+Subtest: CORS is fail-closed when ALLOWED_ORIGINS is empty
+Subtest: rate limit: per-IP window; spoofed first x-forwarded-for entry cannot dodge it; limits are per route
+Subtest: database outage: 503 db_unavailable on data routes, health stays 200 with ok:false, recovers
+Subtest: shutdown: new data requests get 503 shutting_down
+Subtest: responses never contain more than the documented fields (no raw upstream payload)
+Subtest: all 12 real price strings parse, round-trip exactly and are inside the plausibility ranges
+Subtest: magnitude guard: x1e6 / x1e-6 scaled real prices are rejected as implausible (they still parse)
+Subtest: config: PRICE_RANGE override is validated
+Subtest: recorder replays the real SOL/ETH/BTC strings: stored exactly, receive-time basis, unchanged-run tracked
+Subtest: recorder rejects an implausible FIRST observation (no jump baseline) and records it as a reject
+Subtest: API declares timeBasis=receive_time
+Subtest: live-check: GET-only to the Jupiter host, 3 requests per sample, reports headers / price type / timestamp-like keys
+Subtest: live-check: caps requests (max 20 samples), exits non-zero on 429 or network failure, never sends credentials
+Subtest: 003 is additive: every SOL/ETH/BTC row, column and constraint is byte-identical after it; it applies once and is checksum-protected
+Subtest: 003 isolation constraints: SOL/ETH/BTC can never be view markets; view rows need a verified market, a positive price and the Hyperliquid source tag
+Subtest: 003 failure handling: a migration that fails part-way leaves no 003 table and no record (transaction rolled back), and existing data is intact
+Subtest: 003 operator rollback (ops/003_rollback.sql): archives view data, removes ONLY the 003 tables and record, SOL/ETH/BTC untouched, 003 can be re-applied
+Subtest: Jupiter REST increase mapping forwards documented fields only
+Subtest: Jupiter REST decrease mapping forwards only selected close fields
+Subtest: Jupiter Side enum encoding and Borsh field order match the published IDL
+Subtest: execution remains locked pending live Jupiter transaction verification
+Subtest: pg adapter: pool is configured with timeouts and a small max; query passes params through
+Subtest: pg adapter: a failing script is rolled back and the connection is released
+Subtest: pg adapter: leader lock uses ONE dedicated connection, is idempotent, reports loss, and releases
+Subtest: server.js refuses to start without DATABASE_URL and never prints secrets
+Subtest: recorder summary exposes request and DB diagnostics without changing the sampling contract
+Subtest: thrown upstream request is classified as network failure and does not crash recorder
+Subtest: database errors are measured and surfaced while observation remains queued
+Subtest: throwing diagnostic logger cannot prevent a valid observation from being accepted
+Subtest: a newer observation never bypasses an older queued observation after a failed flush
+Subtest: queue overflow preserves all older observations and rejects the newest
+Subtest: samples every 15 s per market, staggered 0/5/10 s, never over the request budget
+Subtest: duplicate slot: two fetches in one slot -> one stored row, exactly one tick, one candle update
+Subtest: failure modes: nothing invalid is stored; each is logged; other markets keep recording
+Subtest: invalid prices from a healthy HTTP 200 are rejected and recorded as rejects
+Subtest: 429: backoff ladder 30/60/120 s (cap), Retry-After honoured, no tight loop, recovery resets
+Subtest: rate-limit headers are captured and surfaced in health (never assumed)
+Subtest: global request budget caps total calls even with a short interval
+Subtest: no overlap: a hung fetch makes the next slot skip, not queue; the client deadline still frees it
+Subtest: jump filter end-to-end: lone spike rejected, sustained move accepted on the 3rd confirming sample
+Subtest: stale -> down transitions at 37.5 s and 5 min; recovery to live; status events published only on change
+Subtest: restart recovery: gap preserved, state truthful, candles rebuilt, nothing back-filled
+Subtest: crash between observation insert and candle write: recovery rebuilds the missing candle
+Subtest: database outage: ticks still published (persisted:false), bounded queue flushed in order on recovery, late items dropped, candles stay consistent
+Subtest: single writer: a second instance on the same database does not record; takes over when the leader goes away
+Subtest: leader loss while running stops the recorder (no split-brain)
+Subtest: clock moving backwards: recording pauses instead of writing out-of-order data
+Subtest: retention: purges old observations/logs, keeps candles; runs once per UTC day
+Subtest: config safety: neither the public health route nor the protected status route leaks the database URL, API key or status token; logs are clean
+Subtest: recovery rebuilds an earlier missing bucket even when a later bucket is already complete
+Subtest: isolation: the existing Saturn WebSocket constant and hosts never appear in this repository
+Subtest: outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere
+Subtest: HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bodies (behind the execution switch); no eval/child_process/dynamic require
+Subtest: secrets: no keys, tokens, URLs with credentials or private hosts hard-coded; .env is ignored
+Subtest: dependencies: exactly ws and pg, nothing else
+Subtest: WebSocket is a separate path on this service; the spot path is not served
+Subtest: migrations are additive and forward-only (no DROP/TRUNCATE/ALTER ... DROP)
+Subtest: r120 icons: one GET to the fixed host/path with the asked mints; only https icons for the asked mints are kept
+Subtest: r120 icons: cached for the TTL; a failure keeps the last good icons and waits before retrying
+Subtest: r120 icons: malformed responses give no icons (nothing invented); only the fixed host is allowed; key stays in the request header
+Subtest: registry: 11 markets, identity/provider/venue/eligibility fixed in code; only SOL/ETH/BTC executable; JUP the token is a Hyperliquid view market, not Jupiter Perps
+Subtest: ONE contract: all 11 rows carry exactly the same fields, with provider, venue, source, price kind, state, category, eligibility and view-only status
+Subtest: each adapter independently: every market shows ITS OWN provider price (11 different scripted values)
+Subtest: failure isolation: Hyperliquid fully down -> SOL/ETH/BTC keep recording; Jupiter down for SOL -> ETH/BTC and all 8 view markets keep recording
+Subtest: rate limits: a Hyperliquid 429 backs the view recorder off (no hammering) and never touches the Jupiter budget
+Subtest: wrong timestamps: a CoinGecko reading dated in the future or hours old is not accepted as a cross-check (price hidden once the last good check expires)
+Subtest: restart recovery: a new process on the same database keeps every market's own history and candles, and resumes recording
+Subtest: candle isolation: every candle of every market is built only from that market's own observations, in that market's own table
+Subtest: WebSocket isolation: a client gets ticks only for markets it subscribed to, each tagged with its own provider and source
+Subtest: r126 24 h change for SOL/ETH/BTC with GAPPY history (free plan sleeps): computed from two REAL observations 24 h apart; never another market's; dash when none within 30 min
+Subtest: r126 24 h stats with a FULL hourly history keep the candle-based high/low/change (unchanged behaviour)
+Subtest: time: UTC alignment for every timeframe, incl. day/month/year boundaries
+Subtest: candle: OHLC correct, first/last by time, high/low from extremes
+Subtest: candle: zero observations -> no candle (never fabricated)
+Subtest: candle: forming until bucket end + grace, complete after
+Subtest: candle: validity thresholds at exact boundaries (coverage 0.80 and max gap)
+Subtest: candle: bucket-edge gaps count (recording started mid-bucket -> invalid)
+Subtest: candle: property test vs brute-force oracle (random sets, shuffled-insertion invariance)
+Subtest: candle: ohlcOk rejects invalid candles
+Subtest: validate: price parsing accepts plain positive decimals only
+Subtest: jump filter: 20% rule, 3 consecutive confirming samples required
+Subtest: jump filter: a lone spike never gets in; pending resets when price returns
+Subtest: jump filter: non-agreeing jumps do not confirm each other; down moves handled symmetrically
+Subtest: jump filter: seed() sets a baseline; reset() clears it
+Subtest: jupiter client: fixed host only, GET only, no redirects, no credentials
+Subtest: jupiter client: classifies every failure mode
+Subtest: jupiter client: captures rate-limit headers generically; sends API key only when configured, with the configured header name
+Subtest: jupiter client: retry-after parsing
+Subtest: config: defaults, bounds, secrets handling
+Subtest: config: STATUS_TOKEN must be long and printable; empty means the status endpoint is disabled
+Subtest: limits: client IP ignores a spoofed first x-forwarded-for entry
+Subtest: limits: sliding window limiter
+Subtest: config: unknown VIEW_MARKETS entries are reported, the Hyperliquid base and market sets are pinned, the table is never executable
+Subtest: discovery: listing read from BOTH market sets; ONE allMids per market set per slot for all 8 markets; ONE CoinGecko call per 5 min; key in a header only
+Subtest: /v1/perps/markets: all 11 markets, view markets executable:false with null leverage/volume/OI, real 24 h change from the venue reference, stocks categorised
+Subtest: Saturn 24 h statistics replace the venue reference only after a FULL 24 h of valid Saturn observations (no estimates, no filled gaps)
+Subtest: honest status: a coin missing or delisted on Hyperliquid, or a wrong CoinGecko id, stays LISTED with no price and a reason; it is never recorded
+Subtest: r125 without a CoinGecko key (today's Render config): all 8 markets are listed AND priced; crypto checked against the Hyperliquid oracle; identity + logos from the public CoinGecko endpoint, no key sent
+Subtest: cross-check: crypto >2% from CoinGecko, or an equity >2% from its own oracle, hides the price and pauses recording; both recover; an expired check hides prices
+Subtest: CoinGecko monthly cap: once reached, no further CoinGecko request is made that month
+Subtest: malformed / invalid / stale / frozen prices are rejected or hidden; never shown, never turned into candles
+Subtest: WebSocket: verified view markets (crypto and equities) can be subscribed, ticks carry the Hyperliquid source; unlisted markets are refused
+Subtest: logos (r126): all 11 markets are served from the declared official files in assets/logos, with no network fetch (works while CoinGecko answers 429)
+Subtest: logos (r123): a shipped file is used only when declared in SOURCES.json with its official source and matching sha256
+Subtest: logos: without a bundled file, only a verified image on an allow-listed host is fetched (once), never anything else
+Subtest: ISOLATION: view-only markets can never reach trade preparation, the execution gateway, transaction building, signing or SOL/ETH/BTC accounts
+Subtest: diagnostic script (scripts/view-markets-live-check.mjs) against MOCKED sources: passes good markets, reports the rest with a reason, never prints the key
+Subtest: r122 contract + deploy audit: SOL/ETH/BTC are never flagged view-only; the response says which commit is running and whether VIEW_MARKETS / the cross-check key are configured (never the key itself)
+Subtest: subscribe while the database is down: no unhandled rejection, client gets an answer, subscription still works afterwards
+Subtest: hello on connect: protocol fields, no raw data; path and origin enforced
+Subtest: ticks: sent only for NEW accepted observations of subscribed markets; seq monotonic; markets isolated
+Subtest: no message for rejected spikes, failed fetches or duplicate slots
+Subtest: candle messages: forming updates, then a final complete candle with its validity flag; only subscribed timeframes
+Subtest: staleness: a status message is sent, ticks stop (last price is NOT repeated as fresh), recovery announces live
+Subtest: protocol validation: every malformed client message gets a typed error and the socket survives
+Subtest: subscribe limits are cumulative per connection; unsubscribe stops delivery
+Subtest: per-connection message rate limit and 1 KB payload cap
+Subtest: per-IP connection cap; slot freed on close
+Subtest: heartbeat: a client that never answers pings is dropped; a normal client stays
+Subtest: shutdown closes sockets with 1001
+Subtest: hub backpressure (fake sockets): droppable messages skipped over the soft limit, slow consumers terminated over the hard limit
+Subtest: hub: unsubscribed clients get nothing; closed clients are cleaned up
+tests 170
+pass 170
+fail 0
+
+## 3. MOCK browser R129: real page + REAL relay code; mocked Hyperliquid mainnet, Arbitrum One, Saturn Wallet EVM side
+PASS PROD 360 SOL (Jupiter) Trade: reference layout (Perpetual · up to 20x, LEVERAGE Max 20x, COLLATERAL Available, Position size, red Est. liquidation + explanation, More options Fees, TP/SL, Long SOL · 5x, review note) SOL-PERP | Perpetual · up to 20x | Delayed | $150.00 | ▲ 2.74% | 1m | 5m | 15m | 1h | 4h |  | Live updates paused · refreshing every 15 s |  | 24h high | $153.50 | 24h low | $144.20 | 24h change | +2.74% | Market details | Long | Short | LEVERAGE | Max 20x | 2x | 5x | 10x | 20x | COLLATERAL | Available 500.00 USDC | $ | USDC | SOL | USDC ▾ | Position size | $1,000.00 | Est. liquidation | $120.00 |  | At 5x, a 20% fall in SOL liquidates this position. |  | More options | Fees, TP/SL | › | Long SOL · 5x |  | You'll review everything before signing
+PASS PROD 360 HYPE (Hyperliquid) uses the IDENTICAL Trade component (same element skeleton as SOL) 
+PASS PROD 360 HYPE: real venue limits (up to 10x, 20x chip disabled) + ONE available number (Hyperliquid 10 + Saturn Wallet Arbitrum 25 = 35.00 USDC) HYPE-PERP | Perpetual · up to 10x | Delayed | $31.50 | ▲ 5.00% | 1m | 5m | 15m | 1h | 4h |  | Live updates paused · refreshing every 15 s |  | 24h high | — | 24h low | — | 24h change | +5.00% | Market details | Long | Short | LEVERAGE | Max 10x | 2x | 5x | 10x | 20x | COLLATERAL | Available 35.00 USDC | $ | USDC | USDC ▾ | Position size | $100.00 | Est. liquidation | $26.53 |  | At 5x, a 16% fall in HYPE liquidates this position. |  | More options | Fees, TP/SL | › | Long HYPE · 5x |  | You'll review everything before signing
+PASS PROD 360 HYPE liquidation uses Hyperliquid's rule (maintenance = half of initial at max leverage) 
+PASS PROD 360 More options: venue fees + TP/SL inputs enabled (Hyperliquid supports TP/SL) Opening fee (est.)
+PASS PROD 360 HYPE Review (shared sheet): Review long, HYPE-PERP · 5x · Market order, HYPERLIQUID tag, all reference rows, risk, Confirm and sign LOCKED with genuine reason, Edit order, footnote Review long |  | HYPE-PERP · 5x · Market order |  | HYPERLIQUID | Collateral | $20.00 USDC | Position size | $100.00 · 3.175 HYPE | Entry price (est.) | $31.50 | Est. liquidation | $26.53 | Fees (est.) | $0.05 | Stop loss | Not set › | Transaction details |  | You can lose your entire $20 collateral. The position is liquidated if HYPE falls to $26.53. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is placed until you sign in your wallet
+PASS PROD 360 "Stop loss · Not set ›" returns to the form with Stop loss focused 
+PASS PROD 360 SOL Review: SAME sheet component (identical skeleton), SOLANA tag, TP/SL genuinely "Not available", locked Review long |  | SOL-PERP · 5x · Market order |  | SOLANA | Collateral | $200.00 USDC | Position size | $1,000.00 · 6.667 SOL | Entry price (est.) | $150.00 | Est. liquidation | $120.00 | Fees (est.) | $0.60 | Stop loss | Not available | Transaction details |  | You can lose your entire $200 collateral. The position is liquidated if SOL falls to $120.00. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is placed until you sign in your wallet
+PASS PROD 360 SNDK (Trade.xyz HIP-3): same sheet, TRADE.XYZ · HYPERLIQUID tag, its own limits (10x) Review long |  | SNDK-PERP · 5x · Market order |  | TRADE.XYZ · HYPERLIQUID | Collateral | $20.00 USDC | Position size | $100.00 · 0.1526 SNDK | Entry price (est.) | $655.50 | Est. liquidation | $552.00 | Fees (est.) | $0.09 | Stop loss | Not set › | Transaction details |  | You can lose your entire $20 collateral. The position is liquidated if SNDK falls to $552.00. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is 
+PASS PROD 360 over the balance: explains where to add USDC (Arbitrum, in You) and that Solana USDC is not used  · refreshing every 15 s
+PASS PROD 360 no withdrawal anywhere in Perps (#/perps/markets) 
+PASS PROD 360 no withdrawal anywhere in Perps (#/perps/trade/HYPE-PERP) 
+PASS PROD 360 no withdrawal anywhere in Perps (#/perps/positions) 
+PASS PROD 360 no overflow 
+PASS PROD 360 SAFETY: nothing signed, sent, switched or relayed 
+PASS PROD 360 no page errors []
+PASS PROD 390 SOL (Jupiter) Trade: reference layout (Perpetual · up to 20x, LEVERAGE Max 20x, COLLATERAL Available, Position size, red Est. liquidation + explanation, More options Fees, TP/SL, Long SOL · 5x, review note) SOL-PERP | Perpetual · up to 20x | Delayed | $150.00 | ▲ 2.74% | 1m | 5m | 15m | 1h | 4h |  | Live updates paused · refreshing every 15 s |  | 24h high | $153.50 | 24h low | $144.20 | 24h change | +2.74% | Market details | Long | Short | LEVERAGE | Max 20x | 2x | 5x | 10x | 20x | COLLATERAL | Available 500.00 USDC | $ | USDC | SOL | USDC ▾ | Position size | $1,000.00 | Est. liquidation | $120.00 |  | At 5x, a 20% fall in SOL liquidates this position. |  | More options | Fees, TP/SL | › | Long SOL · 5x |  | You'll review everything before signing
+PASS PROD 390 HYPE (Hyperliquid) uses the IDENTICAL Trade component (same element skeleton as SOL) 
+PASS PROD 390 HYPE: real venue limits (up to 10x, 20x chip disabled) + ONE available number (Hyperliquid 10 + Saturn Wallet Arbitrum 25 = 35.00 USDC) HYPE-PERP | Perpetual · up to 10x | Delayed | $31.50 | ▲ 5.00% | 1m | 5m | 15m | 1h | 4h |  | Live updates paused · refreshing every 15 s |  | 24h high | — | 24h low | — | 24h change | +5.00% | Market details | Long | Short | LEVERAGE | Max 10x | 2x | 5x | 10x | 20x | COLLATERAL | Available 35.00 USDC | $ | USDC | USDC ▾ | Position size | $100.00 | Est. liquidation | $26.53 |  | At 5x, a 16% fall in HYPE liquidates this position. |  | More options | Fees, TP/SL | › | Long HYPE · 5x |  | You'll review everything before signing
+PASS PROD 390 HYPE liquidation uses Hyperliquid's rule (maintenance = half of initial at max leverage) 
+PASS PROD 390 More options: venue fees + TP/SL inputs enabled (Hyperliquid supports TP/SL) Opening fee (est.)
+PASS PROD 390 HYPE Review (shared sheet): Review long, HYPE-PERP · 5x · Market order, HYPERLIQUID tag, all reference rows, risk, Confirm and sign LOCKED with genuine reason, Edit order, footnote Review long |  | HYPE-PERP · 5x · Market order |  | HYPERLIQUID | Collateral | $20.00 USDC | Position size | $100.00 · 3.175 HYPE | Entry price (est.) | $31.50 | Est. liquidation | $26.53 | Fees (est.) | $0.05 | Stop loss | Not set › | Transaction details |  | You can lose your entire $20 collateral. The position is liquidated if HYPE falls to $26.53. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is placed until you sign in your wallet
+PASS PROD 390 "Stop loss · Not set ›" returns to the form with Stop loss focused 
+PASS PROD 390 SOL Review: SAME sheet component (identical skeleton), SOLANA tag, TP/SL genuinely "Not available", locked Review long |  | SOL-PERP · 5x · Market order |  | SOLANA | Collateral | $200.00 USDC | Position size | $1,000.00 · 6.667 SOL | Entry price (est.) | $150.00 | Est. liquidation | $120.00 | Fees (est.) | $0.60 | Stop loss | Not available | Transaction details |  | You can lose your entire $200 collateral. The position is liquidated if SOL falls to $120.00. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is placed until you sign in your wallet
+PASS PROD 390 SNDK (Trade.xyz HIP-3): same sheet, TRADE.XYZ · HYPERLIQUID tag, its own limits (10x) Review long |  | SNDK-PERP · 5x · Market order |  | TRADE.XYZ · HYPERLIQUID | Collateral | $20.00 USDC | Position size | $100.00 · 0.1526 SNDK | Entry price (est.) | $655.50 | Est. liquidation | $552.00 | Fees (est.) | $0.09 | Stop loss | Not set › | Transaction details |  | You can lose your entire $20 collateral. The position is liquidated if SNDK falls to $552.00. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is 
+PASS PROD 390 over the balance: explains where to add USDC (Arbitrum, in You) and that Solana USDC is not used  · refreshing every 15 s
+PASS PROD 390 no withdrawal anywhere in Perps (#/perps/markets) 
+PASS PROD 390 no withdrawal anywhere in Perps (#/perps/trade/HYPE-PERP) 
+PASS PROD 390 no withdrawal anywhere in Perps (#/perps/positions) 
+PASS PROD 390 no overflow 
+PASS PROD 390 SAFETY: nothing signed, sent, switched or relayed 
+PASS PROD 390 no page errors []
+PASS PROD 430 SOL (Jupiter) Trade: reference layout (Perpetual · up to 20x, LEVERAGE Max 20x, COLLATERAL Available, Position size, red Est. liquidation + explanation, More options Fees, TP/SL, Long SOL · 5x, review note) SOL-PERP | Perpetual · up to 20x | Delayed | $150.00 | ▲ 2.74% | 1m | 5m | 15m | 1h | 4h |  | Live updates paused · refreshing every 15 s |  | 24h high | $153.50 | 24h low | $144.20 | 24h change | +2.74% | Market details | Long | Short | LEVERAGE | Max 20x | 2x | 5x | 10x | 20x | COLLATERAL | Available 500.00 USDC | $ | USDC | SOL | USDC ▾ | Position size | $1,000.00 | Est. liquidation | $120.00 |  | At 5x, a 20% fall in SOL liquidates this position. |  | More options | Fees, TP/SL | › | Long SOL · 5x |  | You'll review everything before signing
+PASS PROD 430 HYPE (Hyperliquid) uses the IDENTICAL Trade component (same element skeleton as SOL) 
+PASS PROD 430 HYPE: real venue limits (up to 10x, 20x chip disabled) + ONE available number (Hyperliquid 10 + Saturn Wallet Arbitrum 25 = 35.00 USDC) HYPE-PERP | Perpetual · up to 10x | Delayed | $31.50 | ▲ 5.00% | 1m | 5m | 15m | 1h | 4h |  | Live updates paused · refreshing every 15 s |  | 24h high | — | 24h low | — | 24h change | +5.00% | Market details | Long | Short | LEVERAGE | Max 10x | 2x | 5x | 10x | 20x | COLLATERAL | Available 35.00 USDC | $ | USDC | USDC ▾ | Position size | $100.00 | Est. liquidation | $26.53 |  | At 5x, a 16% fall in HYPE liquidates this position. |  | More options | Fees, TP/SL | › | Long HYPE · 5x |  | You'll review everything before signing
+PASS PROD 430 HYPE liquidation uses Hyperliquid's rule (maintenance = half of initial at max leverage) 
+PASS PROD 430 More options: venue fees + TP/SL inputs enabled (Hyperliquid supports TP/SL) Opening fee (est.)
+PASS PROD 430 HYPE Review (shared sheet): Review long, HYPE-PERP · 5x · Market order, HYPERLIQUID tag, all reference rows, risk, Confirm and sign LOCKED with genuine reason, Edit order, footnote Review long |  | HYPE-PERP · 5x · Market order |  | HYPERLIQUID | Collateral | $20.00 USDC | Position size | $100.00 · 3.175 HYPE | Entry price (est.) | $31.50 | Est. liquidation | $26.53 | Fees (est.) | $0.05 | Stop loss | Not set › | Transaction details |  | You can lose your entire $20 collateral. The position is liquidated if HYPE falls to $26.53. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is placed until you sign in your wallet
+PASS PROD 430 "Stop loss · Not set ›" returns to the form with Stop loss focused 
+PASS PROD 430 SOL Review: SAME sheet component (identical skeleton), SOLANA tag, TP/SL genuinely "Not available", locked Review long |  | SOL-PERP · 5x · Market order |  | SOLANA | Collateral | $200.00 USDC | Position size | $1,000.00 · 6.667 SOL | Entry price (est.) | $150.00 | Est. liquidation | $120.00 | Fees (est.) | $0.60 | Stop loss | Not available | Transaction details |  | You can lose your entire $200 collateral. The position is liquidated if SOL falls to $120.00. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is placed until you sign in your wallet
+PASS PROD 430 SNDK (Trade.xyz HIP-3): same sheet, TRADE.XYZ · HYPERLIQUID tag, its own limits (10x) Review long |  | SNDK-PERP · 5x · Market order |  | TRADE.XYZ · HYPERLIQUID | Collateral | $20.00 USDC | Position size | $100.00 · 0.1526 SNDK | Entry price (est.) | $655.50 | Est. liquidation | $552.00 | Fees (est.) | $0.09 | Stop loss | Not set › | Transaction details |  | You can lose your entire $20 collateral. The position is liquidated if SNDK falls to $552.00. |  | Execution is disabled in this build, so nothing can be signed or sent. | Why | Confirm and sign | Edit order |  | Nothing is 
+PASS PROD 430 over the balance: explains where to add USDC (Arbitrum, in You) and that Solana USDC is not used  · refreshing every 15 s
+PASS PROD 430 no withdrawal anywhere in Perps (#/perps/markets) 
+PASS PROD 430 no withdrawal anywhere in Perps (#/perps/trade/HYPE-PERP) 
+PASS PROD 430 no withdrawal anywhere in Perps (#/perps/positions) 
+PASS PROD 430 no overflow 
+PASS PROD 430 SAFETY: nothing signed, sent, switched or relayed 
+PASS PROD 430 no page errors []
+PASS PROD no EVM address: tells the user to create it in You; nothing invented to 10x
+PASS ACTIVE(mock) available before: 35.00 USDC (10 on Hyperliquid + 25 in Saturn Wallet on Arbitrum) HYPE-PERP
+PASS ACTIVE(mock) review shows the funding step explicitly (amount, from Saturn Wallet on Arbitrum One, to Hyperliquid, fee), the one-time trading key, SL and TP Review long |  | HYPE-PERP · 5x · Market order |  | HYPERLIQUID | Collateral | $25.00 USDC | Position size | $124.65 · 3.27 HYPE | Entry price (est.) | $38.12 | Est. liquidation | $32.08 | Fees (est.) | $0.06 | Stop loss | $30.00 › | Take profit | $50.00 | Transaction details | Venue | Hyperliquid | Network | Hyperliquid mainnet | Contract | HYPE · asset 2 | Margin mode | Cross | Fee rate | 0.0450% of size | Max slippage | 1.0% (worst price $38.501) | Funding | $15.06 USDC from your Saturn Wallet (Arbitrum One) to Hyperliquid. Arbitrum network fee in ETH; credited in about a minute. | Trading key | One-time approval of a Saturn trading key (trade-only, cannot withdraw, expires in 30 days). | Signed by | Your Saturn Wallet (0x7099…79c8) |  | You can lose your entire $25 collateral. The position is liquidated if HYPE falls to $32.08. |  | Valid for 42 s | Confirm and sign | Edit order |  | Nothing is placed until you sign in your wallet
+PASS ACTIVE(mock) double tap: ONE Arbitrum transfer of 15.06 USDC to Bridge2 (min 5), from the Saturn Wallet [{"t": "arbTransfer", "user": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "to": "0x2df1c51e09aecf9cacb7bc98cb1742757f163df7", "amount": 15.06, "hash": "0x1a1eee16f77fffffffffffffffffffffffffffffffffffffffffffffffffffff"}]
+PASS ACTIVE(mock) the relay verified the Arbitrum receipt and recorded it; credited only after Hyperliquid's ledger showed it [{"tx_hash": "0x1a1eee16f77fffffffffffffffffffffffffffffffffffffffffffffffffffff", "user_addr": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "amount_usd": 15.06, "amount": 15.06, "state": "credited", "ledger_hash": "0xl1a1eee16f77fffffff", "t": 1795009113986}]
+PASS ACTIVE(mock) trading key approved by the Saturn Wallet (Mainnet, <=30 days), then ONE order group: IOC entry + TP + SL (normalTpsl) [{"t": "order", "user": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "signer": "0x330566b4f358b876ee59828a9a82d895027a6fef", "action": {"type": "order", "orders": [{"a": 2, "b": true, "p": "38.501", "s": "3.27", "r": false, "t": {"limit": {"tif": "Ioc"}}, "c": "0xfd356f65334570bdb50163f74f5ea68a"}, {"a": 2, "b": false, "p": "50", "s": "3.27", "r": true, "t": {"trigger": {"isMarket": true, "triggerPx": "50", "tpsl": "tp"}}}, {"a": 2, "b": false, "p": "30", "s": "3.27", "r": true, "t": {"trigger": {"isMarket": true, "triggerPx": "30", "tpsl": "sl"}}}], "grouping": "normalTpsl"}}]
+PASS ACTIVE(mock) exchange-confirmed result shown in the same sheet (status Confirmed) Hyperliquid filled 3.27 HYPE at $38.12.
+PASS ACTIVE(mock) the only network change was the Arbitrum transfer the review announced (Saturn Wallet, chain 0xa4b1) ['0xa4b1']
+PASS ACTIVE(mock) after: ONE available number = Hyperliquid withdrawable (margin in the position excluded) + Saturn Wallet Arbitrum USDC left (9.94); nothing counted twice; UI == backend {"ok": true, "user": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "market": "HYPE", "dex": "", "mode": "disabled", "unified": false, "wallet": {"arbitrumUsdc": 9.94, "arbitrumEth": 0.00999, "usable": 9.94, "reason": null}, "venue": {"main": {"accountValue": 25, "withdrawable": 0.07, "marginUsed": 24.93}, "xyz": {"accountValue": 0, "withdrawable": 0, "marginUsed": 0}, "spotFree": 0, "direct": 0.07, "viaMove": 0, "committed": 24.93, "openOrderNotional": 0}, "pending": {"usd": 0, "transfers": []}, || Available 10.01 USDC
+PASS ACTIVE(mock) Positions: the Hyperliquid position is listed with the Jupiter ones (exchange-confirmed) Positions
+PASS ACTIVE(mock) manage panel for a Hyperliquid position: close / close part, no "receive as", no withdrawal 
+PASS ACTIVE(mock) close uses the SAME Review sheet (Review close, HYPERLIQUID) Review close
+PASS ACTIVE(mock) close: reduce-only IOC; released collateral returns to the ONE available balance 10.01 -> 34.89 | Hyperliquid closed 3.27 at $38.12. The released collateral is back in your available balance.
+PASS ACTIVE(mock) SNDK review: funding = move from your Hyperliquid balance to Trade.xyz (no fee) Review long
+PASS ACTIVE(mock) SNDK: sendAsset main->xyz to OWN address, then order on 120001 (Trade.xyz id, not a crypto id) [{"t": "sendAsset", "user": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "action": {"type": "sendAsset", "signatureChainId": "0xa4b1", "hyperliquidChain": "Mainnet", "destination": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8", "sourceDex": "", "destinationDex": "xyz", "token": "USDC:0x6d1e7cde53ba9 | Hyperliquid filled 0.15 SNDK at $655.5.
+PASS ACTIVE(mock) SOL in the same build still goes to the Jupiter adapter (prepared on Solana, SOLANA) Review long
+PASS ACTIVE(mock) SAFETY: the Solana wallet signed nothing for Hyperliquid; no testnet; no withdraw action ever relayed 
+PASS ACTIVE(mock) no page errors []
+SUMMARY 66 passed, 0 failed (MOCKED: Hyperliquid mainnet, Arbitrum One, Saturn Wallet EVM side, Saturn data service, Solana. REAL: Saturn frontend + Saturn relay code. NOT live.)
+
+## 4. MOCK regressions on the R129 page
+Jupiter flow (r129 copy, new Review design): SUMMARY 187 passed, 0 failed (ALL MOCKED)
+View-only: SUMMARY 108 passed, 0 failed (ALL MOCKED)
+Legacy: SUMMARY 42 passed, 0 failed (ALL MOCKED)
+
+## 5. Live / testnet / real-money: none.
