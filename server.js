@@ -21,3 +21,13 @@ app.start().catch(e => { console.error('[saturn-perps-data] startup_failed:', e 
 let stopping = false;
 const stop = () => { if (stopping) return; stopping = true; app.shutdown().finally(() => process.exit(0)); setTimeout(() => process.exit(1), 10000).unref(); };
 process.on('SIGTERM', stop); process.on('SIGINT', stop);
+
+/* r133 keep-awake: Render's free plan stops this service after 15 min without inbound traffic, so the recorder stops and every chart gets holes.
+ * While running on Render (RENDER_EXTERNAL_URL is set by Render itself) the service calls its OWN public /healthz every 10 min through Render's
+ * edge, which counts as inbound traffic. Only its own URL, no data sent. Set KEEP_AWAKE=0 to turn it off. */
+const SELF = String(process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+if (/^https:\/\/[a-z0-9-]+\.onrender\.com$/i.test(SELF) && process.env.KEEP_AWAKE !== '0') {
+  const ping = () => fetch(SELF + '/healthz', { headers: { 'user-agent': 'saturn-perps-keepawake' }, signal: AbortSignal.timeout(15000) }).then(r => r.body?.cancel?.()).catch(() => {});
+  setInterval(ping, 10 * 60 * 1000).unref(); setTimeout(ping, 60 * 1000).unref();
+  console.log('[saturn-perps-data] keep-awake on: ' + SELF + '/healthz every 10 min');
+}
