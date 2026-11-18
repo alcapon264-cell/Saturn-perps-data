@@ -28,6 +28,8 @@ export function fakeSources() {
         return J([{ universe: U }, U.map(a => { const mid = typeof M[a.name] === 'function' ? M[a.name](S.hl.length) : M[a.name]; return { midPx: mid || null, markPx: mid || null, oraclePx: S.oracle[a.name] || mid || null, prevDayPx: S.prevDay[a.name] || mid || null, funding: '0', openInterest: '1', dayNtlVlm: '1' }; })]);
       }
       if (body.type === 'meta') return J({ universe: U });
+      if (body.type === 'perpDexs') return J([null, { name: 'flx' }, { name: 'xyz' }]);   /* r132 */
+      if (body.type === 'candleSnapshot') { S.candleReqs = (S.candleReqs || []).concat([body.req]); return J(S.candles ? S.candles(body.req) : []); }   /* r132 */
       if (S.mode.hl === 'http500') return J({ e: 1 }, 500);
       if (S.mode.hl === 'badjson') return J('not json{');
       if (S.mode.hl === 'network') throw new TypeError('fetch failed');
