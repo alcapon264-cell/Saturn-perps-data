@@ -1,10 +1,52 @@
 [
-  { "market": "SOL", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/solana/info/logo.png", "sha256": "b0fb83e48d1b455333436ae158cd9e547b7493ef4f5b2d5de3d678e93a994d4c" },
-  { "market": "ETH", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/ethereum/info/logo.png", "sha256": "c253d7c5d4203783e31bde1d33e143f6a9ce1defac24ab5e06948847696b80a1" },
-  { "market": "BTC", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/bitcoin/info/logo.png", "sha256": "5119d67e7902df5ef9d0e40e309b5f2da85dd8a736eae870072dbe647ed6bcc4" },
-  { "market": "HYPE", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/hyperevm/info/logo.png", "sha256": "27ba7a7b1267e95890710ba2d67fd44b144d0871b5b3bf773c2cab6b723a9521" },
-  { "market": "ZEC", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/zcash/info/logo.png", "sha256": "4ee75012961ba05e0d87fcad0f1607a8a1a430862ce6f7c45b12fbc05a8f58f3" },
-  { "market": "JUP", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/solana/assets/JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN/logo.png", "sha256": "e239ffeda682be609698fd512d2820c0fb20e06c07ddf8ac55a753a57e4ad162" },
-  { "market": "NEAR", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/near/info/logo.png", "sha256": "3ef6620bdc78d7c782068d435c0b97cec0f68b3c7ed4e0e9e2787b8ba5cd8102" },
-  { "market": "BNB", "source": "https://github.com/trustwallet/assets/blob/master/blockchains/binance/info/logo.png", "sha256": "4135f6a88e8c8c62a4daaaa4f296fffbfd3c41e731b6b8ba54ccbcb7f9ff46ce" }
+  {
+    "market": "SOL",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/solana/info/logo.png",
+    "sha256": "b0fb83e48d1b455333436ae158cd9e547b7493ef4f5b2d5de3d678e93a994d4c"
+  },
+  {
+    "market": "ETH",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/ethereum/info/logo.png",
+    "sha256": "c253d7c5d4203783e31bde1d33e143f6a9ce1defac24ab5e06948847696b80a1"
+  },
+  {
+    "market": "BTC",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/bitcoin/info/logo.png",
+    "sha256": "5119d67e7902df5ef9d0e40e309b5f2da85dd8a736eae870072dbe647ed6bcc4"
+  },
+  {
+    "market": "HYPE",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/hyperevm/info/logo.png",
+    "sha256": "27ba7a7b1267e95890710ba2d67fd44b144d0871b5b3bf773c2cab6b723a9521"
+  },
+  {
+    "market": "ZEC",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/zcash/info/logo.png",
+    "sha256": "4ee75012961ba05e0d87fcad0f1607a8a1a430862ce6f7c45b12fbc05a8f58f3"
+  },
+  {
+    "market": "JUP",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/solana/assets/JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN/logo.png",
+    "sha256": "e239ffeda682be609698fd512d2820c0fb20e06c07ddf8ac55a753a57e4ad162"
+  },
+  {
+    "market": "NEAR",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/near/info/logo.png",
+    "sha256": "3ef6620bdc78d7c782068d435c0b97cec0f68b3c7ed4e0e9e2787b8ba5cd8102"
+  },
+  {
+    "market": "BNB",
+    "source": "https://github.com/trustwallet/assets/blob/master/blockchains/binance/info/logo.png",
+    "sha256": "4135f6a88e8c8c62a4daaaa4f296fffbfd3c41e731b6b8ba54ccbcb7f9ff46ce"
+  },
+  {
+    "market": "SPCX",
+    "source": "https://github.com/simple-icons/simple-icons/blob/develop/icons/spacex.svg",
+    "sha256": "76f9501bd5426c896b81ba1ae02dd804377cdc34e7ec9ae3ca8169bbb8e1f8d8"
+  },
+  {
+    "market": "SKHYNIX",
+    "source": "https://github.com/gilbarbara/logos/blob/main/logos/sk-hynix.svg",
+    "sha256": "f275c72f2a4cc45d4ca068860ff293a3df2746b9ce064994455cf2239f1a250b"
+  }
 ]
