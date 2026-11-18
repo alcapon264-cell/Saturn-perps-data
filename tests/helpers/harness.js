@@ -13,7 +13,7 @@ export const START = Date.UTC(2026, 10, 16, 0, 0, 0);      /* aligned to every t
 export async function makeEnv({ taps = {}, env = {}, cfgOverrides = {}, prices, start = START, db = null, clock = null, jup = null, init = true } = {}) {
   db = db || await createTestDb(); if (!db) return null;
   clock = clock || new FakeClock(start);
-  const cfg = { ...loadConfig({ DATABASE_URL: 'postgres://secret-user:secret-pass@db.internal/saturn', ALLOWED_ORIGINS: 'https://app.example', ...env }), ...cfgOverrides };
+  const cfg = { ...loadConfig({ DATABASE_URL: 'postgres://secret-user:secret-pass@db.internal/saturn', ALLOWED_ORIGINS: 'https://app.example', VIEW_MARKETS: 'off', ...env }   /* r125: view markets are ON by default in production; the SOL/ETH/BTC tests opt out explicitly, view tests opt in */), ...cfgOverrides };
   jup = jup || fakeJupiter({ prices: prices || { [MARKETS.SOL]: 150, [MARKETS.ETH]: 3000, [MARKETS.BTC]: 90000 } });
   jup.clock = clock;
   const logs = [];
