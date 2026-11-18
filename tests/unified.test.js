@@ -212,3 +212,20 @@ test('r132 24 h stats: the venue\'s own 1 h candles (basis hyperliquid_candles_1
     assert.equal(h.stats24h, null, 'a missing hour -> no 24 h stats'); assert.equal(h.change24h.basis, 'hyperliquid_prevDayPx', 'falls back to the venue previous-day reference');
   } finally { await g.drop(); }
 });
+
+test('r133 Hyperliquid chart candles: /v1/perps/candles for a Hyperliquid market = the venue\'s own continuous candles; the open bucket only as forming; Saturn candles when the venue fails; SOL unchanged', opts, async () => {
+  const mk = req => { const IV = { '1m': 60000, '5m': 300000 }[req.interval], out = []; for (let t = Math.floor(req.startTime / IV) * IV; t <= req.endTime; t += IV) out.push({ t, T: t + IV - 1, s: req.coin, i: req.interval, o: '31', c: '31.2', h: '31.5', l: '30.9', v: '10', n: 3 }); return out; };
+  const e = await boot({ before: S => { S.candles = mk; } }); try {
+    await cycle(e); await e.view.tick(); const port = await e.app.start({ port: 0, host: '127.0.0.1' }), base = 'http://127.0.0.1:' + port;
+    const r = await (await fetch(base + '/v1/perps/candles?market=HYPE&tf=5m&limit=50')).json();
+    assert.equal(r.source, 'hyperliquid:candleSnapshot'); assert.equal(r.candles.length, 50);
+    for (let i = 1; i < r.candles.length; i++) assert.equal(r.candles[i].t - r.candles[i - 1].t, 300, 'no holes');
+    assert.ok(r.candles.every(c => c.status === 'complete' && c.t * 1000 < Math.floor(e.clock.now() / 300000) * 300000), 'open bucket excluded without includeForming');
+    const f = await (await fetch(base + '/v1/perps/candles?market=HYPE&tf=5m&limit=5&includeForming=1')).json();
+    assert.equal(f.candles[f.candles.length - 1].status, 'forming');
+    assert.equal(e.S.candleReqs.at(-1).coin, 'HYPE');
+    const sol = await (await fetch(base + '/v1/perps/candles?market=SOL&tf=5m')).json(); assert.equal(sol.source, 'jupiter-perps:market-stats');
+    e.S.candles = () => { throw new Error('x'); }; e.S.mode.ctx = 'ok';
+    const fb = await (await fetch(base + '/v1/perps/candles?market=ZEC&tf=1m')).json(); assert.equal(fb.source, 'hyperliquid:allMids', 'venue down -> Saturn recorded candles');
+  } finally { await e.drop(); }
+});

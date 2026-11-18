@@ -22,7 +22,11 @@ test('isolation: the existing Saturn WebSocket constant and hosts never appear i
 
 test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere', () => {
   const callers = Object.entries(prod).filter(([f, t]) => /\bfetch\s*\(|fetchImpl\s*\(|https?\.request|net\.connect|axios/.test(t) && !/live-check/.test(f)).map(([f]) => f);
-  assert.deepEqual(callers.sort(), ['src/hl-exec.js', 'src/jupiter.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay)');
+  assert.deepEqual(callers.sort(), ['server.js', 'src/hl-exec.js', 'src/jupiter.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay) + r133 keep-awake');
+  /* r133: server.js only ever calls its OWN public /healthz (Render's onrender.com URL), nothing else */
+  const sv = prod['server.js'];
+  assert.deepEqual([...sv.matchAll(/fetch\(([^,]+),/g)].map(m => m[1].trim()), ["SELF + '/healthz'"]);
+  assert.match(sv, /\^https:\\\/\\\/\[a-z0-9-\]\+\\\.onrender\\\.com\$/, 'only an onrender.com self URL is accepted');
   /* r128: the Hyperliquid relay talks ONLY to Hyperliquid MAINNET, on exactly two fixed paths, and never signs anything (it only recovers signers) */
   const hx = prod['src/hl-exec.js'].replace(/\/\*[\s\S]*?\*\//g, '');
   assert.match(hx, /export const HL_API = 'https:\/\/api\.hyperliquid\.xyz';/);
