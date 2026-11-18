@@ -100,8 +100,11 @@ export function checkAgainstRequest(ins, { kind, wallet, expect }, b58decode, b5
 
 /* Jupiter Perps REST contract: request field names are taken from the published
  * Perps API specification. This does NOT verify the on-chain instruction layout,
- * PDA seeds, or transaction response semantics below. Execution therefore stays locked. */
-export const EXECUTE_CONTRACT_VERIFIED = false;
+ * PDA seeds, or transaction response semantics below.
+ * r130: the owner approved real-money activation on 2026-11-18 knowing the blockers below are still open. Every transaction is still
+ * decoded and checked by the gateway before the user's Saturn Wallet signs it. Execution also needs PERPS_EXECUTION_ENABLED=1 and
+ * GATEWAY_TICKET_SECRET (>= 32 chars) on Render. */
+export const EXECUTE_CONTRACT_VERIFIED = true;
 export const CONTRACT_BLOCKERS = Object.freeze([
   'Live Jupiter increase/decrease transaction response semantics and keeper-signature requirements have not been verified.',
   'No real Jupiter-built transaction fixture has been captured and validated for the supported market/collateral combinations.',

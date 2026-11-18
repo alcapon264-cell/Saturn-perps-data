@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import { VIEW_MARKET_TABLE } from './config.js';
 import * as H from './vendor/hlsign.mjs';
 
-export const HL_EXECUTE_VERIFIED = false;   /* stays false until a reviewed, owner-approved activation */
+export const HL_EXECUTE_VERIFIED = true;   /* r130: owner approved real-money activation on 2026-11-18 (all 8 markets). Still needs HL_EXECUTION_ENABLED=1 + HL_VERIFIED_MARKETS on Render */
 export const HL_API = 'https://api.hyperliquid.xyz';
 export const USDC_TOKEN = 'USDC:0x6d1e7cde53ba9467b783cb7c530ce054';   /* Hyperliquid mainnet USDC (token 0) */
 export const ARB = Object.freeze({ usdc: '0xaf88d065e77c8cc2239327c5edb3a432268e5831', bridge2: '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7', minDeposit: 5 });   /* Arbitrum One native USDC, Hyperliquid Bridge2 */
