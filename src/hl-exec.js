@@ -15,7 +15,10 @@
  *   2. HL_EXECUTION_ENABLED=1 in the environment
  * plus a market must be listed in HL_VERIFIED_MARKETS to accept any position-opening order.
  *
- * Checks on every POST: strict schema; action allowlist (no usdSend/spotSend/vault/builder-fee/abstraction changes);
+ * r131 Saturn platform fee (src/fee-policy.js, one rate on filled notional, every venue): collected with Hyperliquid builder codes. When
+ *   SATURN_PERPS_FEE_WALLET_EVM is set and that wallet holds >= 100 USDC on Hyperliquid, EVERY order must carry builder {b: fee wallet, f: policy tenths-of-bp}
+ *   and approveBuilderFee is accepted only for that wallet at exactly the policy rate. Any other builder address or rate is refused.
+ * Checks on every POST: strict schema; action allowlist (no usdSend/spotSend/vault/abstraction changes; builder only as above);
  * Mainnet only; signature recovered here (user-signed: must equal the claimed user; L1: must be an agent Hyperliquid lists for that
  * user and not expired); nonce freshness; durable replay/idempotency (sha256(signer:nonce)); unique cloid per user for orders;
  * order-size cap; leverage cap; IOC price within the slippage cap of Hyperliquid's current mid; resting-limit price band;
@@ -24,6 +27,7 @@
 import { createHash } from 'node:crypto';
 import { VIEW_MARKET_TABLE } from './config.js';
 import * as H from './vendor/hlsign.mjs';
+import { SATURN_PERPS_FEE, hlBuilder, feeFor } from './fee-policy.js';
 
 export const HL_EXECUTE_VERIFIED = true;   /* r130: owner approved real-money activation on 2026-11-18 (all 8 markets). Still needs HL_EXECUTION_ENABLED=1 + HL_VERIFIED_MARKETS on Render */
 export const HL_API = 'https://api.hyperliquid.xyz';
@@ -35,7 +39,9 @@ const ADDR = /^0x[0-9a-fA-F]{40}$/, HEX32 = /^0x[0-9a-fA-F]{1,64}$/, CLOID = /^0
 const USER_SIGNED = { approveAgent: { types: H.APPROVE_AGENT_TYPES, primary: 'HyperliquidTransaction:ApproveAgent' },
   withdraw3: { types: H.WITHDRAW_TYPES, primary: 'HyperliquidTransaction:Withdraw' },
   sendAsset: { types: [{ name: 'hyperliquidChain', type: 'string' }, { name: 'destination', type: 'string' }, { name: 'sourceDex', type: 'string' }, { name: 'destinationDex', type: 'string' },
-    { name: 'token', type: 'string' }, { name: 'amount', type: 'string' }, { name: 'fromSubAccount', type: 'string' }, { name: 'nonce', type: 'uint64' }], primary: 'HyperliquidTransaction:SendAsset' } };
+    { name: 'token', type: 'string' }, { name: 'amount', type: 'string' }, { name: 'fromSubAccount', type: 'string' }, { name: 'nonce', type: 'uint64' }], primary: 'HyperliquidTransaction:SendAsset' },
+  /* r131: types exactly as the official SDK's sign_approve_builder_fee */
+  approveBuilderFee: { types: [{ name: 'hyperliquidChain', type: 'string' }, { name: 'maxFeeRate', type: 'string' }, { name: 'builder', type: 'address' }, { name: 'nonce', type: 'uint64' }], primary: 'HyperliquidTransaction:ApproveBuilderFee' } };
 const L1 = new Set(['order', 'cancel', 'cancelByCloid', 'updateLeverage']);
 const onlyKeys = (o, allowed) => o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).every(k => allowed.includes(k));
 const sha = s => createHash('sha256').update(s).digest('hex');
@@ -45,7 +51,8 @@ export function hlConfig(env) {
   const num = (v, d, lo, hi) => { const n = Number(v); return v != null && v !== '' && Number.isFinite(n) && n >= lo && n <= hi ? n : d; };
   const list = String(env.HL_VERIFIED_MARKETS || '').split(',').map(s => s.trim().toUpperCase()).filter(k => k && VIEW_MARKET_TABLE[k]);
   const requested = /^1$/.test(String(env.HL_EXECUTION_ENABLED || ''));
-  return { requested, enabled: HL_EXECUTE_VERIFIED && requested, verifiedMarkets: list,
+  const fw = String(env.SATURN_PERPS_FEE_WALLET_EVM || '').trim();   /* r131 Saturn fee wallet (an address only, never a key) */
+  return { requested, enabled: HL_EXECUTE_VERIFIED && requested, verifiedMarkets: list, feeWallet: ADDR.test(fw) ? fw.toLowerCase() : null, builderMinUsd: 100,
     maxOrderUsd: num(env.HL_MAX_ORDER_USD, 50, 10, 100000), maxLeverage: num(env.HL_MAX_LEVERAGE, 10, 1, 50),
     maxSlippageBps: num(env.HL_MAX_SLIPPAGE_BPS, 300, 10, 1000), limitBandPct: 20, maxWithdrawUsd: num(env.HL_MAX_WITHDRAW_USD, 1000, 2, 1000000),
     agentMaxDays: 30, nonceSkewPastMs: 10 * 60000, nonceSkewFutureMs: 60000, maxBody: 8192, arbRpc: /^https:\/\/[^\s]+$/.test(String(env.ARB_RPC_URL || '')) ? String(env.ARB_RPC_URL) : DEFAULT_ARB_RPC,
@@ -104,8 +111,9 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
   /* ---------- canonical actions (exact field order the official SDK hashes) ---------- */
   function canonOrder(a) {
     /* one order (grouping "na"), or r129 one entry order + its TP and/or SL (grouping "normalTpsl"); never a builder fee */
-    if (!onlyKeys(a, ['type', 'orders', 'grouping']) || !Array.isArray(a.orders) || !((a.grouping === 'na' && a.orders.length === 1) || (a.grouping === 'normalTpsl' && a.orders.length >= 2 && a.orders.length <= 3)))
-      throw refuse(400, 'bad_action', 'One order (or one order with its TP/SL) per request, no builder fee.');
+    if (!onlyKeys(a, ['type', 'orders', 'grouping', 'builder']) || !Array.isArray(a.orders) || !((a.grouping === 'na' && a.orders.length === 1) || (a.grouping === 'normalTpsl' && a.orders.length >= 2 && a.orders.length <= 3)))
+      throw refuse(400, 'bad_action', 'One order (or one order with its TP/SL) per request.');
+    if (a.builder !== undefined && !(onlyKeys(a.builder, ['b', 'f']) && ADDR.test(a.builder.b) && Number.isInteger(a.builder.f))) throw refuse(400, 'bad_action', 'Malformed fee field.');
     const wires = a.orders.map((o, i) => {
       const lim = o && o.t && onlyKeys(o.t, ['limit']) && onlyKeys(o.t.limit, ['tif']) && ['Gtc', 'Ioc', 'Alo'].includes(o.t.limit.tif);
       const trg = o && o.t && onlyKeys(o.t, ['trigger']) && onlyKeys(o.t.trigger, ['isMarket', 'triggerPx', 'tpsl']) && o.t.trigger.isMarket === true && DEC.test(o.t.trigger.triggerPx) && ['tp', 'sl'].includes(o.t.trigger.tpsl);
@@ -120,7 +128,9 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
       const [m0, ...ch] = wires, kinds = ch.map(x => x.t.trigger.tpsl);
       if (m0.r || new Set(kinds).size !== kinds.length || ch.some(x => x.a !== m0.a || x.b === m0.b || !x.r || x.s !== m0.s || x.p !== x.t.trigger.triggerPx)) throw refuse(400, 'bad_tpsl', 'TP/SL must be reduce-only, opposite side, same market and size as the order.');
     }
-    return { type: 'order', orders: wires, grouping: a.grouping };
+    const out = { type: 'order', orders: wires, grouping: a.grouping };   /* key order = official SDK: type, orders, grouping, builder */
+    if (a.builder !== undefined) out.builder = { b: a.builder.b.toLowerCase(), f: a.builder.f };
+    return out;
   }
   function canonL1(a) {
     if (a.type === 'order') return canonOrder(a);
@@ -136,12 +146,30 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
     if (a.type === 'approveAgent') { if (!onlyKeys(a, [...base, 'agentAddress', 'agentName', 'nonce']) || !ADDR.test(a.agentAddress) || typeof a.agentName !== 'string' || !Number.isInteger(a.nonce)) throw refuse(400, 'bad_action', 'Malformed agent approval.'); return { type: a.type, signatureChainId: a.signatureChainId, hyperliquidChain: 'Mainnet', agentAddress: a.agentAddress.toLowerCase(), agentName: a.agentName, nonce: a.nonce }; }
     if (a.type === 'withdraw3') { if (!onlyKeys(a, [...base, 'destination', 'amount', 'time']) || !ADDR.test(a.destination) || !DEC.test(a.amount) || !Number.isInteger(a.time)) throw refuse(400, 'bad_action', 'Malformed withdrawal.'); return { type: a.type, signatureChainId: a.signatureChainId, hyperliquidChain: 'Mainnet', destination: a.destination, amount: a.amount, time: a.time }; }
     if (a.type === 'sendAsset') { if (!onlyKeys(a, [...base, 'destination', 'sourceDex', 'destinationDex', 'token', 'amount', 'fromSubAccount', 'nonce']) || !ADDR.test(a.destination) || !DEC.test(a.amount) || !Number.isInteger(a.nonce)) throw refuse(400, 'bad_action', 'Malformed transfer.'); return { type: a.type, signatureChainId: a.signatureChainId, hyperliquidChain: 'Mainnet', destination: a.destination, sourceDex: a.sourceDex, destinationDex: a.destinationDex, token: a.token, amount: a.amount, fromSubAccount: a.fromSubAccount, nonce: a.nonce }; }
+    if (a.type === 'approveBuilderFee') { if (!onlyKeys(a, [...base, 'maxFeeRate', 'builder', 'nonce']) || !ADDR.test(a.builder) || typeof a.maxFeeRate !== 'string' || !Number.isInteger(a.nonce)) throw refuse(400, 'bad_action', 'Malformed fee approval.'); return { type: a.type, signatureChainId: a.signatureChainId, hyperliquidChain: 'Mainnet', maxFeeRate: a.maxFeeRate, builder: a.builder.toLowerCase(), nonce: a.nonce }; }
     throw refuse(400, 'action_not_allowed', 'This action is not allowed through Saturn.');
+  }
+
+  /* ---------- r131 Saturn platform fee (global policy, Hyperliquid builder code) ---------- */
+  async function builderFunded() {   /* Hyperliquid only pays a builder that keeps >= 100 USDC perps account value */
+    if (!C.feeWallet) return false;
+    try { const cs = await cached('builder|' + C.feeWallet, 60000, () => info({ type: 'clearinghouseState', user: C.feeWallet })); return Number(cs && cs.marginSummary && cs.marginSummary.accountValue) >= C.builderMinUsd; }
+    catch { return false; }
+  }
+  async function feeState() {
+    const want = hlBuilder(C.feeWallet), funded = want ? await builderFunded() : false;
+    return { want, collecting: !!(want && funded), reason: !want ? 'fee_wallet_not_set' : !funded ? 'fee_wallet_below_100_usdc' : null };
   }
 
   /* ---------- policy ---------- */
   async function checkUserSigned(a, user) {
     const t = now();
+    if (a.type === 'approveBuilderFee') {
+      if (!C.feeWallet) throw refuse(403, 'fee_wallet_not_set', 'Saturn has no fee wallet configured.');
+      if (a.builder !== C.feeWallet) throw refuse(400, 'builder_not_allowed', 'Only Saturn\'s own fee wallet can be approved here.');
+      if (a.maxFeeRate !== SATURN_PERPS_FEE.percent) throw refuse(400, 'fee_rate_mismatch', 'Saturn\'s fee is exactly ' + SATURN_PERPS_FEE.percent + '.');
+      return { reason: null };
+    }
     if (a.type === 'approveAgent') {
       const m = /^saturn valid_until (\d{13})$/.exec(a.agentName);
       if (!m || Number(m[1]) <= t || Number(m[1]) > t + C.agentMaxDays * 86400000) throw refuse(400, 'agent_expiry', 'Saturn trading keys must expire within ' + C.agentMaxDays + ' days.');
@@ -169,6 +197,12 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
       return { m };
     }
     const o = a.orders[0], m = await byAsset(o.a); if (!m) throw refuse(400, 'unknown_asset', 'Not a Saturn Hyperliquid market.');
+    const fs = await feeState();   /* r131: exactly Saturn's builder + 0.06% on every order while the fee is collectable; no other builder ever */
+    if (fs.collecting) { if (!a.builder || a.builder.b !== fs.want.b || a.builder.f !== fs.want.f) throw refuse(400, a.builder ? 'saturn_fee_mismatch' : 'saturn_fee_required', 'Orders must carry Saturn\'s ' + SATURN_PERPS_FEE.percent + ' platform fee.'); }
+    else {
+      if (a.builder) throw refuse(400, 'builder_not_allowed', 'Saturn\'s fee is not active, so orders cannot carry a builder fee.');
+      if (fs.want && !o.r) throw refuse(503, 'fee_wallet_unfunded', 'Saturn\'s fee wallet is not ready on Hyperliquid, so new positions are paused. Closing still works.');
+    }
     const px = Number(o.p), sz = Number(o.s), notional = px * sz;
     if (Math.round(sz * 10 ** m.szDecimals) !== +(sz * 10 ** m.szDecimals).toFixed(6)) throw refuse(400, 'bad_size', 'Size has too many decimals for ' + m.market + '.');
     const ref = await mid(m); if (!ref) throw refuse(503, 'no_price', 'No live Hyperliquid price for ' + m.market + ' right now.');
@@ -231,7 +265,7 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
           if (ag.validUntil && Number(ag.validUntil) <= t) throw refuse(401, 'agent_expired', 'Your Saturn trading key expired. Enable trading again.');
         }
         pol = await checkL1(action, user);
-        if (type === 'order') { const o = action.orders[0]; Object.assign(row, { market: pol.m.market, asset: o.a, is_buy: o.b, size: Number(o.s), price: Number(o.p), reduce_only: o.r, tif: o.t.limit.tif, cloid: o.c || null, notional_usd: pol.notional }); }
+        if (type === 'order') { const o = action.orders[0]; Object.assign(row, { market: pol.m.market, asset: o.a, is_buy: o.b, size: Number(o.s), price: Number(o.p), reduce_only: o.r, tif: o.t.limit.tif, cloid: o.c || null, notional_usd: pol.notional, saturn_fee_tenths_bp: action.builder ? action.builder.f : null }); }
         else row.market = pol.m.market;
       } else throw refuse(400, 'action_not_allowed', 'This action is not allowed through Saturn.');
     } catch (e) {
@@ -336,7 +370,7 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
       if (path === '/v1/perps/hl/config' && req.method === 'GET') {
         if (limiter(ip + '|hl-cfg', 60)) return [429, { ok: false, error: 'rate_limited' }];
         return [200, { ok: true, network: 'hyperliquid-mainnet', api: HL_API, executionEnabled: C.enabled, executionRequested: C.requested, codeVerified: HL_EXECUTE_VERIFIED,
-          verifiedMarkets: C.verifiedMarkets, limits: { maxOrderUsd: C.maxOrderUsd, maxLeverage: C.maxLeverage, maxSlippageBps: C.maxSlippageBps, limitBandPct: C.limitBandPct, maxWithdrawUsd: C.maxWithdrawUsd, agentMaxDays: C.agentMaxDays },
+          verifiedMarkets: C.verifiedMarkets, saturnFee: await (async () => { const fs = await feeState(), p = feeFor('hyperliquid'); return { bps: p.bps, rate: p.rate, percent: p.percent, mechanism: p.mechanism, builder: C.feeWallet, builderTenthsBp: SATURN_PERPS_FEE.hlBuilderTenthsBp, collecting: fs.collecting, reason: fs.reason }; })(), limits: { maxOrderUsd: C.maxOrderUsd, maxLeverage: C.maxLeverage, maxSlippageBps: C.maxSlippageBps, limitBandPct: C.limitBandPct, maxWithdrawUsd: C.maxWithdrawUsd, agentMaxDays: C.agentMaxDays },
           bridge: { chainId: 42161, usdc: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', bridge2: '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7', minDepositUsd: 5, withdrawFeeUsd: 1 } }];
       }
       if (path === '/v1/perps/hl/markets' && req.method === 'GET') {

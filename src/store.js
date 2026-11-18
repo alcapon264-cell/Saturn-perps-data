@@ -109,9 +109,9 @@ export function createStore(db, { tableSet = 'jlp', source = SOURCE } = {}) {
     },
     /* ---- r128 Hyperliquid relay (migration 004). No signatures, keys or raw IPs are ever stored. ---- */
     async hlClaim(r) {
-      const v = [r.id, r.user_addr, r.signer, r.action_type, r.market ?? null, r.asset ?? null, r.is_buy ?? null, r.size ?? null, r.price ?? null, r.reduce_only ?? null, r.tif ?? null, r.cloid ?? null, r.notional_usd ?? null, r.amount_usd ?? null, r.ip_hash ?? null];
+      const v = [r.id, r.user_addr, r.signer, r.action_type, r.market ?? null, r.asset ?? null, r.is_buy ?? null, r.size ?? null, r.price ?? null, r.reduce_only ?? null, r.tif ?? null, r.cloid ?? null, r.notional_usd ?? null, r.amount_usd ?? null, r.ip_hash ?? null, r.saturn_fee_tenths_bp ?? null];
       try {
-        const x = await db.query("INSERT INTO perps_hl_requests(id,user_addr,signer,action_type,market,asset,is_buy,size,price,reduce_only,tif,cloid,notional_usd,amount_usd,ip_hash,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending') ON CONFLICT (id) DO NOTHING RETURNING id", v);
+        const x = await db.query("INSERT INTO perps_hl_requests(id,user_addr,signer,action_type,market,asset,is_buy,size,price,reduce_only,tif,cloid,notional_usd,amount_usd,ip_hash,saturn_fee_tenths_bp,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'pending') ON CONFLICT (id) DO NOTHING RETURNING id", v);
         if (x.rows.length) return { fresh: true };
         const p = await db.query('SELECT state, reason, response FROM perps_hl_requests WHERE id = $1', [r.id]);
         return { fresh: false, prior: p.rows[0] || { state: 'unknown' } };
