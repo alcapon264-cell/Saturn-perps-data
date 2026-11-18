@@ -48,5 +48,11 @@
     "market": "SKHYNIX",
     "source": "https://github.com/gilbarbara/logos/blob/main/logos/sk-hynix.svg",
     "sha256": "f275c72f2a4cc45d4ca068860ff293a3df2746b9ce064994455cf2239f1a250b"
+  },
+  {
+    "market": "SNDK",
+    "source": "https://www.sandisk.com",
+    "sha256": "270592beea8f4f469aba91e92b77e8f830bee1f70a3c0b79b9afd1d2e102fc45",
+    "note": "logo image supplied by the Saturn owner"
   }
 ]
