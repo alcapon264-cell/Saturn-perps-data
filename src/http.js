@@ -96,6 +96,11 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       let beforeMs = null; if (q.has('before')) { const s = q.get('before'); if (!/^\d{1,12}$/.test(s)) return err(res, 400, 'bad_before', cors); beforeMs = Number(s) * 1000; }
       const includeForming = q.get('includeForming') === '1';
       const key = ['c', isView ? 'v' : 'j', market, tf, limit, beforeMs, includeForming].join('|');
+      /* r133: a Hyperliquid market's chart comes from Hyperliquid's own candles (continuous, same venue as its price); Saturn's recorded candles
+       * are the fallback when Hyperliquid cannot be reached. SOL/ETH/BTC are unchanged. */
+      const vc = isView && typeof view.venueCandles === 'function' ? await view.venueCandles(market, tf, { limit, beforeMs, includeForming }).catch(() => null) : null;
+      if (vc && vc.length) return send(res, 200, { ok: true, market, tf, source: 'hyperliquid:candleSnapshot', viewOnly: true, basis: 'venue', serverTime: Math.floor(now() / 1000), candles: vc,
+        meta: { timeBasis: 'venue_bucket', firstObservationAt: null, validCount: vc.filter(c => c.status === 'complete').length, returned: vc.length } }, cors);
       const data = await cached(key, 2000, async () => {
         try {
           const [candles, first, validCount] = await Promise.all([cstore.candles(market, tf, { limit, beforeMs, includeForming }), cstore.firstObservationMs(market), cstore.validCount(market, tf)]);

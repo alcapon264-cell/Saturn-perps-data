@@ -68,12 +68,14 @@ export function createHyperliquidClient({ fetchImpl = globalThis.fetch, base = H
         coins.set(qualify(dex, a.name), { delisted: a.isDelisted === true, midPx: dec(c.midPx), markPx: dec(c.markPx), oraclePx: dec(c.oraclePx), prevDayPx: dec(c.prevDayPx), dayNtlVlm: dec(c.dayNtlVlm), openInterest: dec(c.openInterest) }); });
       return { ok: true, coins };
     },
-    /* r132 -> {ok:true, candles:[{t,o,h,l,c,v}]}  the venue's own 1 h candles for ONE coin (Hyperliquid candleSnapshot), oldest first */
-    async candles1h(coin, startTime, endTime) {
-      if (typeof coin !== 'string' || !COIN.test(coin) || !Number.isInteger(startTime) || !Number.isInteger(endTime) || endTime <= startTime || endTime - startTime > 3 * 86400000) throw new Error('bad_candle_request');
-      const r = await bounded(fetchImpl, base + '/info', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval: '1h', startTime, endTime } }) }, { timeoutMs, maxBody: 256 * 1024 });
+    /* r132/r133 -> {ok:true, candles:[{t,o,h,l,c,v}]}  the venue's own candles for ONE coin (Hyperliquid candleSnapshot), oldest first, t in ms */
+    async candles1h(coin, startTime, endTime) { return this.candles(coin, '1h', startTime, endTime); },
+    async candles(coin, interval, startTime, endTime) {
+      const IV = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
+      if (typeof coin !== 'string' || !COIN.test(coin) || !IV[interval] || !Number.isInteger(startTime) || !Number.isInteger(endTime) || endTime <= startTime || (endTime - startTime) / IV[interval] > 5000) throw new Error('bad_candle_request');
+      const r = await bounded(fetchImpl, base + '/info', { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' }, body: JSON.stringify({ type: 'candleSnapshot', req: { coin, interval, startTime, endTime } }) }, { timeoutMs, maxBody: 2 * 1024 * 1024 });
       if (!r.ok) return r;
-      if (!Array.isArray(r.json) || r.json.length > 200) return { ok: false, outcome: 'malformed', detail: 'candles_not_array' };
+      if (!Array.isArray(r.json) || r.json.length > 5000) return { ok: false, outcome: 'malformed', detail: 'candles_not_array' };
       const out = [];
       for (const k of r.json) { const o = dec(k && k.o), h = dec(k && k.h), l = dec(k && k.l), c = dec(k && k.c), v = dec(k && k.v);
         if (!k || !Number.isInteger(k.t) || !(o > 0 && h > 0 && l > 0 && c > 0) || h < l || v == null) return { ok: false, outcome: 'malformed', detail: 'bad_candle' };

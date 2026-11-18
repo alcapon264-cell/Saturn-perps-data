@@ -226,6 +226,25 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     } catch { v = null; }
     venueStatsCache.set(m, { at: t, v }); return v;
   }
+  /* r133: chart candles for a view market from the SAME venue that prices it (Hyperliquid candleSnapshot): continuous history even while this
+   * service was asleep. Shape = the store's candle rows; the still-open bucket is returned only as status 'forming'. Cached 20 s. null = unavailable. */
+  const venueCandleCache = new Map();
+  const TFMS = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000 };
+  async function venueCandles(m, tf, { limit = 200, beforeMs = null, includeForming = false } = {}, t = now()) {
+    const step = TFMS[tf]; if (!step || !KEYS.includes(m)) return null;
+    const st = leader ? null : await sharedState(), q = leader ? Q[m] : (st.q[m] || null), coin = q && q.coin; if (!coin) return null;
+    const ck = [m, tf, limit, beforeMs, includeForming].join('|'), c = venueCandleCache.get(ck); if (c && t - c.at < 20000) return c.v;
+    let v = null;
+    try {
+      const end = beforeMs != null ? Math.min(beforeMs, t) : t, open = Math.floor(t / step) * step, start = Math.floor(end / step) * step - (limit + 1) * step;
+      const r = await hl.candles(coin, tf, start, end);
+      if (r.ok) v = r.candles.filter(k => k.t % step === 0 && (beforeMs == null || k.t < beforeMs) && (includeForming || k.t < open)).slice(-limit)
+        .map(k => ({ t: k.t / 1000, o: k.o, h: k.h, l: k.l, c: k.c, n: null, coverage: 1, maxGapSec: 0, status: k.t >= open ? 'forming' : 'complete', valid: true }));
+      else metrics?.inc('view_venue_candles_' + r.outcome);
+    } catch { v = null; }
+    venueCandleCache.set(ck, { at: t, v }); if (venueCandleCache.size > 400) venueCandleCache.delete(venueCandleCache.keys().next().value);
+    return v;
+  }
   /* r132: the venue's own 24 h notional volume and open interest (USD), only from a fresh context read */
   function venueVolume(q, price, t = now()) {
     const c = q && q.ctx; if (!c || t - c.at > V.ctxMaxAgeMs) return { volume24h: null, openInterest: null };
@@ -308,6 +327,6 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     return { observations: o.rows.length, rejects: r.rows.length };
   }
 
-  return Object.freeze({ enabled, KEYS, coreLogoUrl, store, readStore, recorder, engine, startLeader, stopLeader, tick, retention, marketsView, visibleKeys, isViewMarket, logo, readContexts, crossCheck, quality, Q, BUNDLED,
+  return Object.freeze({ enabled, KEYS, coreLogoUrl, store, readStore, recorder, engine, startLeader, stopLeader, tick, retention, marketsView, venueCandles, visibleKeys, isViewMarket, logo, readContexts, crossCheck, quality, Q, BUNDLED,
     get inFlight() { return Object.values(recorder._S).some(s => s.inFlight) || !!midsInflight; } });
 }
