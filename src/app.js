@@ -119,7 +119,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
           marginMode: d && d.listed ? (d.onlyIsolated ? 'isolated' : 'cross') : null, maxLeverage: d && d.listed ? Math.min(d.maxLeverage, H ? H.maxLeverage : d.maxLeverage) : null, ready: !blocker, blocker } };
     };
   }
-  const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics });   /* r137 Prediction (read-only Polymarket data) */
+  const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log });   /* r137 Prediction (read-only Polymarket data) */
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, isShuttingDown: () => shuttingDown,
     /* r124: one contract for all 11 markets (src/markets.js) */
