@@ -1,13 +1,13 @@
 /* HTTP API. Market data routes are GET-only. The only routes that accept POST are the Perps gateway routes under /v1/perps/jup/,
  * which are handled entirely by src/gateway.js (and are disabled unless execution is explicitly enabled). No admin endpoint, no user-supplied host/mint/SQL. */
 import { MARKET_KEYS, SOURCE, VIEW_SOURCE } from './config.js';
-import { TFS, isTf } from './time.js';
+import { TFS, isTf, TF_SEC } from './time.js';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, view = null, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, view = null, isShuttingDown = () => false }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -46,6 +46,10 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
         return send(res, code, body, { ...cors, ...(extra || {}) });
       }
       if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
+      if (pm && path.startsWith('/v1/pm/')) {   /* r137 Saturn Prediction: read-only Polymarket data (src/pm-data.js) */
+        const [code, body] = await pm.handle(path, q, ip);
+        return send(res, code, body, { ...cors, 'cache-control': code === 200 ? 'public, max-age=10' : 'no-store' });
+      }
 
       if (path === '/healthz' || path === '/') {
         if (limiter(ip + '|health', 120)) return err(res, 429, 'rate_limited', cors);
@@ -107,9 +111,21 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
           return { candles, first, validCount };
         } catch (e) { e.dbUnavailable = true; throw e; }   /* parameters were validated above, so a failure here is the database */
       });
+      /* r135: SOL/ETH/BTC buckets Saturn did not record (free plan asleep) are filled from Pyth's oracle candles (one of Jupiter Perps' own oracles),
+       * each labelled src:'pyth'. Saturn's own candles are never replaced. Only inside the requested window, only completed buckets. */
+      let candles = data.candles, filled = 0;
+      if (!isView && pyth && beforeMs == null) {
+        const step = TF_SEC[tf], end = Math.floor(now() / 1000 / step) * step, start = end - limit * step;
+        const fill = await cached('pyth|' + market + '|' + tf + '|' + limit + '|' + end, 30000, async () => { const r = await pyth.history(market, tf, start, end - 1).catch(() => null); return r && r.ok ? r.candles : []; }).catch(() => []);
+        if (fill.length) {
+          const have = new Set(candles.filter(c => c.status === 'complete' || c.status === 'forming').map(c => c.t));
+          const add = fill.filter(k => k.t >= start && k.t < end && !have.has(k.t)).map(k => ({ t: k.t, o: k.o, h: k.h, l: k.l, c: k.c, n: null, coverage: null, maxGapSec: null, status: 'complete', valid: true, src: 'pyth' }));
+          if (add.length) { filled = add.length; candles = [...candles, ...add].sort((a, b) => a.t - b.t); while (candles.length > limit + (includeForming ? 1 : 0)) candles.shift(); }
+        }
+      }
       return send(res, 200, {
-        ok: true, market, tf, source: isView ? VIEW_SOURCE : SOURCE, ...(isView ? { viewOnly: true } : {}), basis: 'sampled', sampleIntervalSec: cfg.intervalSec, serverTime: Math.floor(now() / 1000),
-        candles: data.candles, meta: { timeBasis: 'receive_time', firstObservationAt: data.first == null ? null : Math.floor(data.first / 1000), validCount: data.validCount, returned: data.candles.length }
+        ok: true, market, tf, source: isView ? VIEW_SOURCE : SOURCE, ...(filled ? { filled: { source: 'pyth-benchmarks', count: filled } } : {}), ...(isView ? { viewOnly: true } : {}), basis: 'sampled', sampleIntervalSec: cfg.intervalSec, serverTime: Math.floor(now() / 1000),
+        candles, meta: { timeBasis: 'receive_time', firstObservationAt: data.first == null ? null : Math.floor(data.first / 1000), validCount: data.validCount, returned: candles.length }
       }, cors);
     } catch (e) {
       metrics?.inc('http_errors');

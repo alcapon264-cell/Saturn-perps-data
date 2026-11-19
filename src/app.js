@@ -15,9 +15,11 @@ import { createHub } from './ws.js';
 import { migrate } from './db.js';
 import { createViewMarkets } from './view.js';
 import { toContract, REGISTRY } from './markets.js';
+import { createPythClient } from './pyth.js';
+import { createPmData } from './pm-data.js';
 import { createHlGateway } from './hl-exec.js';
 
-export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
+export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
   const metrics = createMetrics();
   const store = createStore(db);
   const readStore = createStore(readerDb || db);
@@ -51,6 +53,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
    * Returned only when at least 20 of the last 24 hours are covered; otherwise null. Nothing is estimated or filled.
    * Volume and open interest are NOT recorded by this service, so they are always null (never invented). */
   const statsCache = new Map();
+  const pyth = createPythClient({ fetchImpl: pythFetchImpl || viewFetchImpl });
   async function stats24h(m) {
     const c = statsCache.get(m); if (c && now() - c.at < 60000) return c.v;
     let v = null;
@@ -65,6 +68,15 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
       }
       /* r126: when the hourly history has gaps (the free Render plan sleeps when idle), the 24 h change is still computed from two REAL observations:
        * the latest one and the one recorded closest to exactly 24 h earlier (accepted only within +-30 min). High/low need the full hourly history, so they stay null. */
+      /* r135: Saturn has holes (free plan slept) -> the 24 h open/high/low from Pyth's hourly oracle candles (one of Jupiter Perps' oracles), last = Saturn's own price */
+      if (!v && pyth) {
+        const last = await readStore.lastObservation(m), hour = 3600, end = Math.floor(now() / 1000 / hour) * hour;
+        if (last && now() - last.t <= cfg.downSec * 1000) {
+          const r = await pyth.history(m, '1h', end - 24 * hour, end - 1).catch(() => null), done = r && r.ok ? r.candles.filter(k => k.t >= end - 24 * hour && k.t < end) : [];
+          if (done.length === 24) { const open = done[0].o; let high = Math.max(last.price, ...done.map(k => k.h)), low = Math.min(last.price, ...done.map(k => k.l));
+            v = { open, high, low, last: last.price, changePct: +((last.price - open) / open * 100).toFixed(4), hours: 24, from: done[0].t, basis: 'pyth_oracle_1h' }; }
+        }
+      }
       if (!v) {
         const last = await readStore.lastObservation(m);
         if (last && now() - last.t <= cfg.downSec * 1000) {
@@ -107,8 +119,9 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
           marginMode: d && d.listed ? (d.onlyIsolated ? 'isolated' : 'cross') : null, maxLeverage: d && d.listed ? Math.min(d.maxLeverage, H ? H.maxLeverage : d.maxLeverage) : null, ready: !blocker, blocker } };
     };
   }
+  const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics });   /* r137 Prediction (read-only Polymarket data) */
   const handler = createHttpHandler({
-    cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, isShuttingDown: () => shuttingDown,
+    cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, isShuttingDown: () => shuttingDown,
     /* r124: one contract for all 11 markets (src/markets.js) */
     /* r128: a Hyperliquid market stops being "view only" ONLY when real-money Hyperliquid execution is fully enabled (code + env) AND the market is in
      * HL_VERIFIED_MARKETS. r132: every row also carries its computed `execution`; toContract() derives `executable` from it (Hyperliquid) or keeps
