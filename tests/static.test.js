@@ -22,7 +22,13 @@ test('isolation: the existing Saturn WebSocket constant and hosts never appear i
 
 test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere', () => {
   const callers = Object.entries(prod).filter(([f, t]) => /\bfetch\s*\(|fetchImpl\s*\(|https?\.request|net\.connect|axios/.test(t) && !/live-check/.test(f)).map(([f]) => f);
-  assert.deepEqual(callers.sort(), ['server.js', 'src/hl-exec.js', 'src/jupiter.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay) + r133 keep-awake');
+  assert.deepEqual(callers.sort(), ['server.js', 'src/hl-exec.js', 'src/jupiter.js', 'src/pm-data.js', 'src/pyth.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay) + r133 keep-awake');
+  /* r135: the Pyth client is GET-only to one fixed read-only path */
+  const py = prod['src/pyth.js']; assert.match(py, /export const PYTH_BASE = 'https:\/\/benchmarks\.pyth\.network\/v1\/shims\/tradingview\/history';/); assert.deepEqual([...py.matchAll(/fetchImpl\(([^,]+),/g)].map(m => m[1].trim()), ['url']); assert.match(py, /method: 'GET'/); assert.ok(!/'POST'|signL1|signDigest|privateKey/i.test(py.replace(/\/\*[\s\S]*?\*\//g, '')));
+  /* r137: Prediction data is read-only: GET to Polymarket's three public API hosts only, no keys, no signing, no order routes */
+  const pmd = prod['src/pm-data.js']; assert.match(pmd, /const GAMMA = 'https:\/\/gamma-api\.polymarket\.com', CLOB = 'https:\/\/clob\.polymarket\.com', DATA = 'https:\/\/data-api\.polymarket\.com';/);
+  assert.match(pmd, /method: 'GET'/); const pmCode = pmd.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/'POST'|\/order|privateKey|signTyped|POLY_API_KEY|builder_secret|BUILDER_/i.test(pmCode), 'no trading in the read-only Prediction module');
   /* r133: server.js only ever calls its OWN public /healthz (Render's onrender.com URL), nothing else */
   const sv = prod['server.js'];
   assert.deepEqual([...sv.matchAll(/fetch\(([^,]+),/g)].map(m => m[1].trim()), ["SELF + '/healthz'"]);
