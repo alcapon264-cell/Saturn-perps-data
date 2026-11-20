@@ -39,14 +39,14 @@ test('quoteFromBook walks the real asks; fee = Polymarket formula shares x rate 
 test('feed: one card per event (its most traded open binary market), category tag fallback, sort-field fallback, pagination', async () => {
   const log = [];
   const pm = createPmData({ fetchImpl: fakeFetch([
-    [/order=volume_24hr/, () => ({ status: 422, body: { error: 'bad order' } })],
+    [/order=volume24hr/, () => ({ status: 422, body: { error: 'bad order' } })],
     [/tag_slug=tech$/, () => []],
     [/tag_slug=technology$/, () => [ev({ slug: 'ai-x', tags: [{ slug: 'tech' }], markets: [mkt({ slug: 'will-ai-x', question: 'Will AI X?' })] })]],
     [/\/events\?active=true/, () => [ev({ markets: [mkt({ slug: 'small', volume24hr: 10 }), mkt({ slug: 'big', volume24hr: 999 }), mkt({ slug: 'shut', closed: true, volume24hr: 5000 })] }), ev({ slug: 'multi', markets: [mkt({ outcomes: '["A","B"]' })] })]]
   ], log) });
   const f = await pm.feed('trending', 0, 2);
   assert.equal(f.markets.length, 1); assert.equal(f.markets[0].slug, 'big'); assert.equal(f.markets[0].eventMarkets, 2); assert.equal(f.nextOffset, 2);
-  assert.ok(log.some(u => u.includes('order=volume_24hr')) && log.some(u => u.includes('order=volume24hr')), 'falls back to the older sort field');
+  assert.ok(log.some(u => u.includes('order=volume24hr')) && log.some(u => u.includes('order=volume_24hr')), 'falls back to the other sort field');
   const t = await pm.feed('technology', 0, 8); assert.equal(t.tag, 'technology'); assert.equal(t.markets[0].slug, 'will-ai-x');
   await assert.rejects(pm.feed('casino', 0, 8));
 });
@@ -81,4 +81,29 @@ test('handle(): strict validation, rate limits, upstream failure -> 502 without 
   const [c, b] = await pm.handle('/v1/pm/feed', new URLSearchParams('cat=crypto'), '1.1.1.1'); assert.equal(c, 502); assert.equal(b.error, 'polymarket_unavailable'); assert.ok(!JSON.stringify(b).includes('secret'));
   const [s, st] = await pm.handle('/v1/pm/status', new URLSearchParams(), '1.1.1.1'); assert.equal(s, 200); assert.equal(st.trading, false);
   const lim = createPmData({ limiter: () => true, fetchImpl: async () => new Response('[]') }); assert.equal((await lim.handle('/v1/pm/feed', new URLSearchParams(), '1.1.1.1'))[0], 429);
+});
+
+/* R139 — upstream-failure diagnostics and response-size handling. OFFLINE (scripted responses), not live Polymarket. */
+test('R139: a Gamma response larger than the old 4 MB cap is accepted; one above the cap fails with a clear logged reason', async () => {
+  const pad = 'x'.repeat(5 * 1024 * 1024);                                  /* 5 MB: above the old cap, below the new one */
+  const big = [ev({ description: pad })];
+  const logs = [];
+  const pm = createPmData({ fetchImpl: fakeFetch([[/\/events\?active=true/, () => big]]), log: (n, d) => logs.push([n, d]) });
+  const f = await pm.feed('trending', 0, 8); assert.equal(f.markets.length, 1, 'a ~5 MB events page now loads');
+  const tiny = createPmData({ fetchImpl: fakeFetch([[/\/events\?active=true/, () => big]]), maxBodyBytes: 1024, log: (n, d) => logs.push([n, d]) });
+  await assert.rejects(tiny.feed('trending', 0, 8), /body_too_large/);
+  const l = logs.find(([n]) => n === 'prediction_upstream_failure')[1];
+  assert.equal(l.reason, 'body_too_large'); assert.ok(l.bytes > 1024); assert.equal(l.status, null); assert.equal(l.host, 'gamma-api.polymarket.com'); assert.equal(l.path, '/events');
+});
+
+test('R139: HTTP failures log status, safe query and a sanitized body snippet; secrets are redacted; the public error stays generic', async () => {
+  const logs = [];
+  const bodyText = 'invalid field\n"order" Bearer abc123SECRET token=zzz ' + 'y'.repeat(900);
+  const pm = createPmData({ fetchImpl: fakeFetch([[/\/events\?/, () => ({ status: 422, body: bodyText })]]), log: (n, d) => logs.push([n, d]) });
+  const [code, body] = await pm.handle('/v1/pm/feed', new URLSearchParams('cat=trending'), '1.2.3.4');
+  assert.equal(code, 502); assert.deepEqual(body, { ok: false, error: 'polymarket_unavailable' });
+  const l = logs.find(([n]) => n === 'prediction_upstream_failure')[1], fail = logs.find(([n]) => n === 'prediction_request_failed')[1];
+  assert.equal(l.status, 422); assert.match(l.query, /^\?active=true&closed=false/); assert.ok(l.body.length <= 300);
+  assert.ok(!/SECRET|abc123|zzz/.test(JSON.stringify(logs)), 'credential-looking text is redacted'); assert.ok(!/[\n\r]/.test(l.body));
+  assert.equal(fail.route, '/v1/pm/feed'); assert.equal(fail.status, 422);
 });
