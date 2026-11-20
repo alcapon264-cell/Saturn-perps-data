@@ -85,32 +85,41 @@ export function quoteFromBook(book, usd, feeRate) {
     bookDepthUsd: +asks.reduce((a, l) => a + l.p * l.s, 0).toFixed(2), minOrderSize: num(book && book.min_order_size), tick: num(book && book.tick_size) };
 }
 
-export function createPmData({ fetchImpl = globalThis.fetch, limiter, now = Date.now, timeoutMs = 9000, metrics = null, log = () => {} } = {}) {
+export function createPmData({ fetchImpl = globalThis.fetch, limiter, now = Date.now, timeoutMs = 9000, metrics = null, log = () => {}, maxBodyBytes = 16 * 1024 * 1024 } = {}) {
   const cache = new Map();
+  /* R139: safe, bounded text for logs - control chars stripped, credential-looking values redacted, length capped */
+  const clip = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/(authorization|bearer|api[_-]?key|secret|token|passphrase)[\s:="']*\S*/gi, '[redacted]').slice(0, n);
   async function get(base, path, ttl) {
     const u = base + path, k = u, c = cache.get(k), t = now();
     if (c && t - c.at < ttl) return c.v;
-    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), timeoutMs);
+    const ac = new AbortController(), timer = setTimeout(() => ac.abort(), timeoutMs); let bytes = null, snippet = null;
     try {
       const r = await fetchImpl(u, { method: 'GET', redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { accept: 'application/json' }, signal: ac.signal });
-      if (!r.ok) { metrics?.inc('pm_http_' + r.status); const e = new Error('upstream_' + r.status); e.status = r.status; throw e; }
-      const txt = await r.text(); if (txt.length > 4 * 1024 * 1024) throw new Error('body_too_large');
+      if (!r.ok) {
+        metrics?.inc('pm_http_' + r.status);
+        try { snippet = clip(await r.text(), 300); } catch { /* body unreadable: log without it */ }
+        const e = new Error('upstream_' + r.status); e.status = r.status; throw e;
+      }
+      const txt = await r.text(); bytes = txt.length;
+      if (bytes > maxBodyBytes) { metrics?.inc('pm_body_too_large'); throw new Error('body_too_large'); }
       const v = JSON.parse(txt); cache.set(k, { at: t, v }); if (cache.size > 800) cache.delete(cache.keys().next().value); return v;
     } catch (e) {
-      // Safe diagnostics only: never log query strings, tokens, credentials, or response bodies.
-      const failedUrl = new URL(u);
+      /* Our upstream URLs carry only public market parameters (no credentials), so the query string is safe to log. */
+      let host = null, pathname = null, query = null;
+      try { const fu = new URL(u); host = fu.host; pathname = fu.pathname; query = clip(fu.search, 300); } catch { /* keep nulls */ }
       log('prediction_upstream_failure', {
-        host: failedUrl.host,
-        path: failedUrl.pathname,
+        host, path: pathname, query,
         status: Number.isInteger(e && e.status) ? e.status : null,
         code: e && e.code || null,
-        name: e && e.name || 'Error'
+        name: e && e.name || 'Error',
+        reason: clip(e && e.message, 80),
+        bytes, ms: now() - t, body: snippet
       });
       throw e;
     } finally { clearTimeout(timer); }
   }
-  /* the docs name the sort field volume_24hr; older deployments used volume24hr. Try both, then unsorted, and remember what worked. */
-  const ORDERS = ['volume_24hr', 'volume24hr', null]; let orderIx = 0;
+  /* R139: production Gamma returned 422 for order=volume_24hr and accepted volume24hr, so that goes first. Both, then unsorted, are still tried; what worked is remembered. */
+  const ORDERS = ['volume24hr', 'volume_24hr', null]; let orderIx = 0;
   const evQuery = (tag, offset, limit, o) => '/events?active=true&closed=false&archived=false' + (o ? '&order=' + o + '&ascending=false' : '') + '&limit=' + limit + '&offset=' + offset + (tag ? '&tag_slug=' + encodeURIComponent(tag) : '');
   async function events(tag, offset, limit) {
     for (let i = orderIx; i < ORDERS.length; i++) {
