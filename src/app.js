@@ -17,6 +17,7 @@ import { createViewMarkets } from './view.js';
 import { toContract, REGISTRY } from './markets.js';
 import { createPythClient } from './pyth.js';
 import { createPmData } from './pm-data.js';
+import { createPmWalletVerifier } from './pm-wallet.js';
 import { createHlGateway } from './hl-exec.js';
 
 export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
@@ -120,8 +121,9 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     };
   }
   const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log });   /* r137 Prediction (read-only Polymarket data) */
+  const pmWallet = createPmWalletVerifier({ fetchImpl: viewFetchImpl, rpcUrl: cfg.polygonRpcUrl });
   const handler = createHttpHandler({
-    cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, isShuttingDown: () => shuttingDown,
+    cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, isShuttingDown: () => shuttingDown,
     /* r124: one contract for all 11 markets (src/markets.js) */
     /* r128: a Hyperliquid market stops being "view only" ONLY when real-money Hyperliquid execution is fully enabled (code + env) AND the market is in
      * HL_VERIFIED_MARKETS. r132: every row also carries its computed `execution`; toContract() derives `executable` from it (Hyperliquid) or keeps

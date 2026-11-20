@@ -7,7 +7,7 @@ import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, view = null, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, pmWallet = null, view = null, isShuttingDown = () => false }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -46,7 +46,16 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
         return send(res, code, body, { ...cors, ...(extra || {}) });
       }
       if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
+      if (path === '/v1/pm/wallet/status') {
+        if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
+        if (!pmWallet) return err(res, 503, 'wallet_verifier_unavailable', cors);
+        if (limiter(ip + '|pm-wallet-status', 12)) return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '60' });
+        if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
+        const result = await pmWallet.verify();
+        return send(res, 200, { ok: true, wallet: result }, { ...cors, 'cache-control': 'no-store' });
+      }
       if (pm && path.startsWith('/v1/pm/')) {   /* r137 Saturn Prediction: read-only Polymarket data (src/pm-data.js) */
+        if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
         const [code, body] = await pm.handle(path, q, ip);
         return send(res, code, body, { ...cors, 'cache-control': code === 200 ? 'public, max-age=10' : 'no-store' });
       }

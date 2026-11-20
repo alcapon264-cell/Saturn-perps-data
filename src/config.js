@@ -108,6 +108,8 @@ export function loadConfig(env = process.env) {
     ws: { maxConnPerIp: num(env.WS_MAX_CONN_PER_IP, 20, { min: 1 }), maxMarkets: 3, maxMsgPerWindow: 30, windowMs: 10000, maxPayload: 1024, heartbeatMs: 25000, softBuffer: 256 * 1024, hardBuffer: 1024 * 1024 },
     /* Optional Jupiter API key. The header NAME is deliberately not assumed: set both vars from Jupiter's docs, or neither. */
     jupiterKeyHeader: env.JUPITER_API_KEY_HEADER || '', jupiterKey: env.JUPITER_API_KEY || '',
+    /* Polymarket wallet verifier: read-only Polygon RPC. Optional server-side override; default is public Polygon RPC. */
+    polygonRpcUrl: env.POLYGON_RPC_URL || 'https://polygon-rpc.com',
     /* Perps gateway (/v1/perps/jup/*). Reads are on. The three transaction routes exist but answer 403 execution_disabled unless
      * PERPS_EXECUTION_ENABLED=1 AND a ticket secret is set. Real-money execution is NOT approved: leave this unset. */
     /* r128 Hyperliquid mainnet relay (/v1/perps/hl/*). Real-money execution needs HL_EXECUTION_ENABLED=1 AND HL_EXECUTE_VERIFIED in src/hl-exec.js. */
@@ -134,6 +136,7 @@ export function validateConfig(cfg) {
   if (cfg.statusToken && (cfg.statusToken.length < 24 || !/^[\x21-\x7e]+$/.test(cfg.statusToken))) errs.push('STATUS_TOKEN must be at least 24 printable characters');
   if ((cfg.jupiterKeyHeader && !cfg.jupiterKey) || (!cfg.jupiterKeyHeader && cfg.jupiterKey)) errs.push('JUPITER_API_KEY and JUPITER_API_KEY_HEADER must be set together');
   if (cfg.jupiterKeyHeader && !/^[A-Za-z0-9-]{1,64}$/.test(cfg.jupiterKeyHeader)) errs.push('JUPITER_API_KEY_HEADER has invalid characters');
+  if (cfg.polygonRpcUrl && !/^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/[^\s]*)?$/i.test(cfg.polygonRpcUrl)) errs.push('POLYGON_RPC_URL must be HTTPS');
   if (cfg.view && cfg.view.unknownMarkets.length) errs.push('VIEW_MARKETS has unknown markets: ' + cfg.view.unknownMarkets.join(',') + ' (allowed: ' + VIEW_KEYS_ALL.join(',') + ')');
   if (cfg.view && cfg.view.markets.length && !/^https:\/\/api\.hyperliquid\.xyz$/.test(cfg.view.hyperliquidBase)) errs.push('HYPERLIQUID_INFO_BASE must be https://api.hyperliquid.xyz');
   if (cfg.gateway && cfg.gateway.ticketSecret && cfg.gateway.ticketSecret.length < 32) errs.push('GATEWAY_TICKET_SECRET must be at least 32 characters');
