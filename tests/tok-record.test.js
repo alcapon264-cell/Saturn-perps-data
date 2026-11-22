@@ -61,3 +61,24 @@ test('tok-meta: picture from the metadata uri, Pump.fun fallback, unsafe hosts r
   assert.ok(!calls.some(u => u.includes('127.0.0.1')), 'never fetches a private address');
   const n = calls.length; await TM.resolve([M1, M2]); assert.equal(calls.length, n, 'cached');
 });
+
+test('r177 price history: 1-second SOL candles per token from the stream, aggregated on request, bounded', async () => {
+  const pa = await upstream(); let t0 = 1800000020000;
+  const T = createTokLive({ WebSocketImpl: WebSocket, urls: { pumpapi: pa.url }, upstreams: ['pumpapi'], statsMs: 3600000, record: true, now: () => t0, pxPerMint: 4, pxTotal: 6 });
+  T.start();
+  const cs = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await new Promise(r => cs.on('listening', r)); cs.on('connection', ws => T.attach(ws, {}));
+  const cl = new WebSocket('ws://127.0.0.1:' + cs.address().port); await new Promise(r => cl.on('open', r)); cl.send(JSON.stringify({ type: 'sub', mints: [M1], trades: true }));
+  T._beat(); assert.ok(await until(() => pa.conns.length === 1));
+  const ts = 1800000000;
+  const tr = (m, p, t, q = 0.01, qm) => pa.send({ mint: m, action: 'buy', txSigner: W1, signature: SIG('p' + p + t), quoteAmount: q, price: p, timestamp: t * 1000, ...(qm ? { quoteMint: qm } : {}) });
+  tr(M1, 2, ts); tr(M1, 3, ts); tr(M1, 1, ts); tr(M1, 2.5, ts + 1); tr(M1, 9, ts + 1, 1, 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+  assert.ok(await until(() => T.candles(M1).length === 2));
+  const c = T.candles(M1); assert.deepEqual(c[0].slice(0, 5), [ts, 2, 3, 1, 1]); assert.deepEqual(c[1].slice(0, 5), [ts + 1, 2.5, 2.5, 2.5, 2.5], 'non-SOL quote ignored');
+  assert.ok(Math.abs(c[0][5] - 0.03) < 1e-9);
+  for (let k = 2; k < 8; k++) tr(M1, 1 + k, ts + k);
+  assert.ok(await until(() => T.candles(M1).at(-1)[0] === ts + 7));
+  assert.equal(T.candles(M1).length, 4, 'pxPerMint cap'); assert.deepEqual(T.candles(M1, 5).map(x => x[0]), [ts, ts + 5].filter(b => T.candles(M1).some(x => Math.floor(x[0] / 5) * 5 === b)));
+  tr(M2, 1, ts + 8); tr(M2, 1, ts + 9); tr(M2, 1, ts + 10);
+  assert.ok(await until(() => T.candles(M2).length === 3)); assert.ok(T.stats().pxCandles <= 6, 'pxTotal cap');
+  cl.close(); T.stop(); cs.close(); await pa.close();
+});

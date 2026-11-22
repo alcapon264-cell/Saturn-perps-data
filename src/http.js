@@ -79,10 +79,10 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
         const [code, body] = await stocksApi();
         return send(res, code, body, { ...cors, 'cache-control': code === 200 ? 'public, max-age=10' : 'no-store' });
       }
-      if (tokApi && (path === '/v1/tok/trader' || path === '/v1/tok/meta')) {
+      if (tokApi && (path === '/v1/tok/trader' || path === '/v1/tok/meta' || path === '/v1/tok/candles')) {
         if (limiter(ip + '|tok-api', 120)) return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '30' });
         const [code, body] = await tokApi(path, q);
-        return send(res, code, body, { ...cors, 'cache-control': code === 200 ? 'public, max-age=5' : 'no-store' });
+        return send(res, code, body, { ...cors, 'cache-control': code === 200 ? (path === '/v1/tok/candles' ? 'public, max-age=1' : 'public, max-age=5') : 'no-store' });
       }
       if (path === '/healthz' || path === '/') {
         if (limiter(ip + '|health', 120)) return err(res, 429, 'rate_limited', cors);

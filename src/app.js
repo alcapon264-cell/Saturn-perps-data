@@ -177,6 +177,9 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
       const tl = tokLiveRef.v; if (!tl) return [503, { ok: false, error: 'unavailable' }];
       if (path === '/v1/tok/trader') { const w = String(q.get('w') || ''); if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(w)) return [400, { ok: false, error: 'bad_wallet' }];
         return [200, { ok: true, recording: tl.recording(), since: Math.floor(tl.recSince() / 1000), trades: tl.walletTrades(w) }]; }
+      if (path === '/v1/tok/candles') { const m = String(q.get('mint') || ''); if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)) return [400, { ok: false, error: 'bad_mint' }];
+        const tf = Number(q.get('tf') || 1); if (![1, 5, 15, 60, 300, 900, 3600].includes(tf)) return [400, { ok: false, error: 'bad_tf' }];
+        return [200, { ok: true, mint: m, tf, unit: 'sol', recording: tl.recording(), since: Math.floor(tl.recSince() / 1000), candles: tl.candles(m, tf) }]; }
       const ms = String(q.get('m') || '').split(',').filter(Boolean).slice(0, 50); if (!ms.length) return [400, { ok: false, error: 'no_mints' }];
       return [200, { ok: true, ...(await tokMeta.resolve(ms)) }];
     },

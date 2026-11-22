@@ -24,7 +24,7 @@ const pos = v => { const n = typeof v === 'string' ? Number(v) : v; return typeo
 
 export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpportal'], urls = {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
   setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, log = () => {}, metrics = null, maxPerClient = 40, maxMints = 3000, coalesceMs = 250,
-  graceMs = 30000, silentMs = 90000, statsMs = 60000, record = false, recWallets = 20000, recPerWallet = 100, recMints = 40000, recTotal = 80000 } = {}) {
+  graceMs = 30000, silentMs = 90000, statsMs = 60000, record = false, recWallets = 20000, recPerWallet = 100, recMints = 40000, recTotal = 80000, pxPerMint = 3600, pxTotal = 250000 } = {}) {
   const inc = n => { try { metrics?.inc(n); } catch {} };
   const U = upstreams.filter(k => k === 'pumpapi' || k === 'pumpportal').map(kind => ({ kind, url: kind === 'pumpapi' ? (urls.pumpapi || PUMPAPI_URL) : (urls.pumpportal || PUMPPORTAL_URL),
     ws: null, open: false, retry: 1000, rt: null, lastMsg: 0, opens: 0, msgs: 0, matched: 0, subscribed: new Set(), lastErr: null }));
@@ -72,6 +72,37 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     a.push([sig, mint, side, sol, tok, pos(j.price), ts]); recN++; if (a.length > recPerWallet) { a.shift(); recN--; }
     while (REC.size > recWallets || (recN > recTotal && REC.size > 1)) { const k = REC.keys().next().value; recN -= REC.get(k).length; REC.delete(k); }
   }
+  /* r177 PRICE HISTORY (memory only): 1-second candles in SOL for every Pump.fun / PumpSwap token seen on the stream, so a token page's chart
+   * has history (also for brand-new tokens no chart service lists yet) and a phone that left for a minute can fill the gap when it comes back.
+   * Read with the same cheap regexes as the recorder (no JSON parsing). Per token the last pxPerMint seconds that had a trade; pxTotal overall,
+   * least recently traded tokens dropped first. */
+  const PXH = new Map(); let pxN = 0;
+  const PX_RX = /"price":([0-9.eE+-]{1,30})/, QM_RX = /"quoteMint":"([^"]{1,60})"/, SOLV_RX = /"(?:quoteAmount|solAmount)":([0-9.eE+-]{1,30})/;
+  function pxRecord(s, mint) {
+    const q = QM_RX.exec(s); if (q && q[1] !== SOL) return;
+    const p = Number((PX_RX.exec(s) || [])[1]); if (!(p > 0 && p < 1e9)) return;
+    let ts = 0; const ti = s.lastIndexOf('"timestamp":'); if (ti > 0) ts = Number((/^[0-9]{9,14}/.exec(s.slice(ti + 12, ti + 30)) || [])[0]) || 0;
+    if (ts > 1e12) ts = Math.floor(ts / 1000); const nowS = Math.floor(now() / 1000); if (!(ts > 0) || ts > nowS + 5 || ts < nowS - 600) ts = nowS;
+    const v = Number((SOLV_RX.exec(s) || [])[1]) || 0;
+    let a = PXH.get(mint);
+    if (!a) { mint = own(mint); a = []; PXH.set(mint, a); }
+    const n = a.length;
+    if (n && a[n - 6] === ts) { if (p > a[n - 4]) a[n - 4] = p; if (p < a[n - 3]) a[n - 3] = p; a[n - 2] = p; a[n - 1] += v; return; }
+    if (n && ts < a[n - 6]) { for (let i = n - 6; i >= 0; i -= 6) if (a[i] === ts) { if (p > a[i + 2]) a[i + 2] = p; if (p < a[i + 3]) a[i + 3] = p; a[i + 5] += v; return; } return; }
+    PXH.delete(mint); PXH.set(mint, a);              /* most recently traded last */
+    a.push(ts, p, p, p, p, v); pxN++;
+    if (a.length > pxPerMint * 6) { a.splice(0, 6); pxN--; }
+    while (pxN > pxTotal && PXH.size > 1) { const k = PXH.keys().next().value; pxN -= PXH.get(k).length / 6; PXH.delete(k); }
+  }
+  /* candles for one token, aggregated to tf seconds (1..3600), oldest first, at most 1500 */
+  function candles(mint, tf = 1) {
+    const a = PXH.get(mint); if (!a) return [];
+    const out = []; let c = null;
+    for (let i = 0; i < a.length; i += 6) { const b = Math.floor(a[i] / tf) * tf;
+      if (!c || c[0] !== b) { c = [b, a[i + 1], a[i + 2], a[i + 3], a[i + 4], a[i + 5]]; out.push(c); }
+      else { if (a[i + 2] > c[2]) c[2] = a[i + 2]; if (a[i + 3] < c[3]) c[3] = a[i + 3]; c[4] = a[i + 4]; c[5] += a[i + 5]; } }
+    return out.length > 1500 ? out.slice(-1500) : out;
+  }
   function walletTrades(w) { const a = REC.get(w) || [];
     return a.map(x => { const m = META.get(x[1]); return { sig: x[0], mint: x[1], side: x[2], sol: x[3], tok: x[4], p: x[5], at: x[6], name: m && m.n || null, symbol: m && m.s || null }; }).reverse(); }
   function meta(mints) { const o = {}; for (const m of mints) { const x = META.get(m); if (x) o[m] = { name: x.n, symbol: x.s, uri: x.u }; } return o; }
@@ -104,7 +135,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     let big = false; if (BUY_IN.test(s)) { const q = QA_IN.exec(s); big = !!q && Number(q[1]) >= BIG_STORE_MIN; }
     /* r171: the recorder no longer JSON-parses every firehose message (that pinned the 0.15-CPU instance and slowed every request).
      * It reads the few fields it needs with anchored regexes on the head of the message, and skips dust trades (< 0.1 SOL). */
-    if (record) { try { remember(lite(s, mm[1]), u.kind); } catch {} }
+    if (record) { try { remember(lite(s, mm[1]), u.kind); } catch {} if (u.kind === 'pumpapi') { try { pxRecord(s, mm[1]); } catch {} } }
     let wm = null; if (!ref.has(mm[1]) && !big) { if (!wref.size) return; wm = TRADER_IN.exec(s); if (!wm || !wref.has(wm[1])) return; }   /* neither a watched token nor a followed wallet: dropped before JSON parsing */
     let j; try { j = JSON.parse(s); } catch { return; }
     if (!j || typeof j !== 'object' || j.mint !== mm[1]) return;
@@ -192,12 +223,12 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     for (const u of U) { if (u.open && u.ws && t - u.lastMsg > silentMs) { inc('tok_up_silent'); log('tok-live: ' + u.kind + ' silent ' + Math.round((t - u.lastMsg) / 1000) + 's; reconnecting'); closeUp(u); schedule(u); } }
     reconcile();
   }
-  const stats = () => ({ clients: clients.size, mints: ref.size, wallets: wref.size, bigClients: [...clients.values()].filter(c => c.bigMin > 0).length, bigKept: BIG.length, sent, recWallets: REC.size, recTrades: recN, recMints: META.size, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
+  const stats = () => ({ clients: clients.size, mints: ref.size, wallets: wref.size, bigClients: [...clients.values()].filter(c => c.bigMin > 0).length, bigKept: BIG.length, sent, recWallets: REC.size, recTrades: recN, recMints: META.size, pxMints: PXH.size, pxCandles: pxN, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
   return Object.freeze({
     start() { if (running || !WebSocketImpl || !U.length) return; running = true; hb = setIntervalImpl(beat, 5000); if (hb && hb.unref) hb.unref();
       st = setIntervalImpl(() => { if (clients.size || ref.size) log('tok-live: ' + JSON.stringify(stats())); }, statsMs); if (st && st.unref) st.unref();
       log('tok-live: started ' + U.map(u => u.kind).join('+')); },
     stop() { running = false; if (hb) clearIntervalImpl(hb); if (st) clearIntervalImpl(st); if (flushT) clearTimeoutImpl(flushT); flushT = null; U.forEach(closeUp); for (const ws of clients.keys()) { try { ws.close(); } catch {} } clients.clear(); ref.clear(); },
-    attach, stats, walletTrades, meta, recSince: () => recSince, recording: () => record, _U: U, _flush: flush, _beat: beat
+    attach, stats, walletTrades, meta, candles, recSince: () => recSince, recording: () => record, _U: U, _flush: flush, _beat: beat
   });
 }
