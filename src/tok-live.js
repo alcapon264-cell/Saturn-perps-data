@@ -43,11 +43,14 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
   const RX = { act: /"(?:action|txType)":"(buy|sell)"/, qm: /"quoteMint":"([^"]{1,60})"/, sig: /"signature":"([1-9A-HJ-NP-Za-km-z]{60,100})"/, tr: /"(?:txSigner|traderPublicKey)":"([1-9A-HJ-NP-Za-km-z]{32,44})"/,
     sol: /"(?:quoteAmount|solAmount)":([0-9.eE+-]{1,30})/, tok: /"(?:tokenAmount|baseAmount)":([0-9.eE+-]{1,30})/, px: /"(?:priceSol|price)":([0-9.eE+-]{1,30})/,
     nm: /"name":"((?:[^"\\]|\\.){0,80})"/, sy: /"symbol":"((?:[^"\\]|\\.){0,30})"/, uri: /"uri":"(https:\/\/[^"\s<>]{8,300})"/ };
-  const g = (r, h) => { const m = r.exec(h); return m ? m[1] : undefined; };
+  /* r171c: copy matched text into its own small string; a regex match is a slice that keeps the whole ~3 KB message alive in memory */
+  const own = x => typeof x === 'string' ? Buffer.from(x, 'utf8').toString('utf8') : x;
+  const g = (r, h) => { const m = r.exec(h); return m ? own(m[1]) : undefined; };
   const unq = v => { if (v == null) return v; try { return JSON.parse('"' + v + '"'); } catch { return null; } };
-  function lite(s, mint) {
-    const h = s.length > 2600 ? s.slice(0, 2600) : s, sol = Number(g(RX.sol, h)), needMeta = !META.has(mint);
+  function lite(s, mint0) { let mint = mint0;
+    const h = s.length > 2600 ? s.slice(0, 2600) : s, sol = Number((RX.sol.exec(h) || [])[1]), needMeta = !META.has(mint);
     if (!needMeta && !(sol >= 0.1)) return null;
+    mint = own(mint);
     const o = { mint, action: g(RX.act, h), quoteMint: g(RX.qm, h), signature: g(RX.sig, h), txSigner: g(RX.tr, h), quoteAmount: sol, tokenAmount: Number(g(RX.tok, h)), price: Number(g(RX.px, h)) };
     if (needMeta) { o.name = unq(g(RX.nm, h)); o.symbol = unq(g(RX.sy, h)); o.uri = g(RX.uri, h); }
     const ti = s.lastIndexOf('"timestamp":'); if (ti > 0) { const t = Number((/^[0-9]{9,14}/.exec(s.slice(ti + 12, ti + 30)) || [])[0]); if (t > 0) o.timestamp = t; }
