@@ -114,3 +114,16 @@ test('r143.1: Live/Breaking read the event pool in pages of 20 (one 100-event re
   assert.ok(live.markets.length === 8 && live.markets.every(m => m.live), 'live events from the pages that loaded');
   const br = await pm.feed('breaking', 0, 5); assert.equal(br.markets.length, 5);
 });
+
+test('r143.2 bridge-status: read-only GET of Polymarket /status/{address}; statuses whitelisted; bad addresses refused', async () => {
+  const calls = [];
+  const on = createPmTrade({ env: ENV, log: () => {}, fetchImpl: async (u, o) => { calls.push([u, o.method]); return new Response(JSON.stringify({ transactions: [
+    { fromChainId: '1151111081099710', fromTokenAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', fromAmountBaseUnit: '5000000', toChainId: '137', toTokenAddress: PMX.pUSD, status: 'PROCESSING', createdTimeMs: 1795000000000 },
+    { status: 'EVIL<script>', txHash: '0x<bad>' }], nextCursor: null })); } });
+  const svm = 'So1anaDepositAddr1111111111111111111111111';
+  const [c, b] = await on.handle(req('GET'), '/v1/pm/x/bridge-status', new URLSearchParams('address=' + svm), '1.1.1.1');
+  assert.equal(c, 200); assert.equal(calls[0][0], 'https://bridge.polymarket.com/status/' + svm + '?limit=20'); assert.equal(calls[0][1], 'GET');
+  assert.equal(b.transactions[0].status, 'PROCESSING'); assert.equal(b.transactions[0].fromAmountBaseUnit, '5000000'); assert.equal(b.transactions[1].status, 'UNKNOWN'); assert.equal(b.transactions[1].txHash, null);
+  assert.equal((await on.handle(req('GET'), '/v1/pm/x/bridge-status', new URLSearchParams('address=../deposit'), '1.1.1.1'))[0], 400);
+  assert.equal((await on.handle(req('POST', {}), '/v1/pm/x/bridge-status', new URLSearchParams('address=' + svm), '1.1.1.1'))[0], 405);
+});

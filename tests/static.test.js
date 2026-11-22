@@ -32,7 +32,7 @@ test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the
   /* r143: Prediction trading support never trades: its only outbound calls are Polymarket's bridge (deposit addresses, supported assets).
    * No CLOB, no relayer submission, no order/cancel/transfer code: orders are signed and sent by the user's browser. */
   const pt = prod['src/pm-trade.js'], ptCode = pt.replace(/\/\*[\s\S]*?\*\//g, '');
-  assert.deepEqual([...ptCode.matchAll(/await upstream\(([^,]+),/g)].map(m => m[1].trim()).sort(), ["PMX.bridge + '/deposit'", "PMX.bridge + '/supported-assets'"]);
+  assert.deepEqual([...ptCode.matchAll(/await upstream\(([^,]+),/g)].map(m => m[1].trim()).sort(), ["PMX.bridge + '/deposit'", "PMX.bridge + '/status/' + encodeURIComponent(a) + '?limit=20'", "PMX.bridge + '/supported-assets'"]);
   assert.deepEqual([...ptCode.matchAll(/fetchImpl\(([^,]+),/g)].map(m => m[1].trim()), ['url']);
   assert.ok(!/\/order|cancel|transfer|withdraw|privateKey|signTyped|eth_send/i.test(ptCode), 'no trading or fund movement in pm-trade.js');
   assert.ok(ptCode.indexOf("if (!enabled) return [503") < ptCode.indexOf('await readBody(req)'), 'the trading switch is checked before the builder-signing body is read');
