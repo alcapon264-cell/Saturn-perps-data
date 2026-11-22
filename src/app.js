@@ -179,7 +179,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const wss = new WebSocketServer({ noServer: true, maxPayload: cfg.ws.maxPayload });
   /* r158: Discover token list live prices (src/tok-live.js) on its own path; TOK_LIVE=0 turns it off */
   const tokLive = WebSocketClient && process.env.TOK_LIVE !== '0' ? createTokLive({ WebSocketImpl: WebSocketClient, ...(tokLiveUrls ? { urls: tokLiveUrls } : {}),
-    upstreams: String(process.env.TOK_LIVE_UPSTREAMS || 'pumpapi,pumpportal').split(',').map(x => x.trim()), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics }) : null;
+    upstreams: String(process.env.TOK_LIVE_UPSTREAMS || 'pumpapi').split(',').map(x => x.trim()), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics }) : null;
   const tokWss = tokLive ? new WebSocketServer({ noServer: true, maxPayload: 4096 }) : null;
   const ipConns = new Map();
   server.on('upgrade', (req, socket, head) => {

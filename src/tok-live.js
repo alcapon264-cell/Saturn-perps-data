@@ -59,6 +59,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     if (!j || typeof j !== 'object' || j.mint !== mm[1]) return;
     let p = null, mc = null, side = null;
     if (u.kind === 'pumpapi') {
+      if (!u.keysLogged) { u.keysLogged = true; try { log('tok-live: pumpapi event fields ' + JSON.stringify(Object.keys(j).map(k => k + ':' + (Array.isArray(j[k]) ? 'array' : typeof j[k])))); } catch {} }
       if (j.quoteMint && j.quoteMint !== SOL) return;
       p = pos(j.price); mc = pos(j.marketCapQuote); side = j.action === 'buy' || j.action === 'sell' ? j.action : null;
     } else {
