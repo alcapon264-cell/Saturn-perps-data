@@ -85,3 +85,27 @@ test('tok-live: /tokens/live on the real server (origin checked) delivers watche
     pc.close(); c.close();
   } finally { await e.drop(); await pa.close(); await pp.close(); }
 });
+
+test('tok-live r162: Pulse clients get every trade (signature, wallet, amounts) for watched tokens AND followed wallets', async () => {
+  const pa = await upstream();
+  const T = createTokLive({ WebSocketImpl: WebSocket, upstreams: ['pumpapi'], urls: { pumpapi: pa.url }, coalesceMs: 40, statsMs: 3600000 });
+  T.start();
+  try {
+    const W1 = mint('Walletone'), SIG = A.repeat(2).slice(0, 88);
+    const pulse = browser(), disc = browser(); T.attach(pulse); T.attach(disc);
+    pulse.msg({ type: 'sub', mints: [M1], wallets: [W1], trades: true }); disc.msg({ type: 'sub', mints: [M1] });
+    assert.ok(await until(() => pa.conns.length === 1));
+    pa.send({ mint: M1, action: 'buy', price: 2e-6, solAmount: 0.5, tokenAmount: 250000, signature: SIG, traderPublicKey: mint('Someone'), timestamp: 1763820000 });
+    pa.send({ mint: M3, action: 'sell', price: 1e-6, solAmount: 0.2, tokenAmount: 200000, signature: SIG.replace(/^./, 'Z'), traderPublicKey: W1 });
+    pa.send({ mint: M2, action: 'buy', price: 1e-6, signature: SIG.replace(/^./, 'Y'), traderPublicKey: mint('Nobody') });
+    assert.ok(await until(() => pulse.out.filter(x => x.type === 'trade').length === 2));
+    const tr = pulse.out.filter(x => x.type === 'trade');
+    assert.deepEqual(tr.map(x => [x.mint, x.side, x.sol, x.tok, x.at]), [[M1, 'buy', 0.5, 250000, 1763820000], [M3, 'sell', 0.2, 200000, tr[1].at]]);
+    assert.equal(tr[0].sig, SIG); assert.equal(tr[1].w, W1);
+    await wait(150);
+    assert.equal(disc.out.filter(x => x.type === 'trade').length, 0, 'Discover clients (no trades:true) never get per-trade messages');
+    assert.ok(disc.out.some(x => x.type === 'tok' && x.mint === M1), 'but still get the coalesced price');
+    assert.equal(T.stats().wallets, 1);
+    pulse.close(); disc.close(); assert.equal(T.stats().wallets, 0);
+  } finally { T.stop(); await pa.close(); }
+});

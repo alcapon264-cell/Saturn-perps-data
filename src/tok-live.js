@@ -15,6 +15,8 @@ export const PUMPPORTAL_URL = 'wss://pumpportal.fun/api/data';
 const MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const MINT_IN = /"mint"\s*:\s*"([1-9A-HJ-NP-Za-km-z]{32,44})"/;
 const SOL = 'So11111111111111111111111111111111111111112';
+const TRADER_IN = /"(?:traderPublicKey|txSigner|trader|user)"\s*:\s*"([1-9A-HJ-NP-Za-km-z]{32,44})"/;
+const SIG = /^[1-9A-HJ-NP-Za-km-z]{64,100}$/;
 const pos = v => { const n = typeof v === 'string' ? Number(v) : v; return typeof n === 'number' && Number.isFinite(n) && n > 0 && n < 1e15 ? n : null; };
 
 export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpportal'], urls = {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
@@ -28,6 +30,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
   const ref = new Map();              /* mint -> number of clients watching */
   const leftAt = new Map();           /* mint -> when its last watcher left (unsubscribed upstream after graceMs) */
   const pend = new Map();             /* mint -> pending update */
+  const wref = new Map();             /* r162: wallet -> number of clients following it (Pulse "Following") */
   let flushT = null, running = false, hb = null, st = null, sent = 0;
 
   /* ---------- upstreams ---------- */
@@ -54,7 +57,8 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
   function handle(u, raw) {
     let s; try { s = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8'); } catch { return; }
     if (s.length > 65536) return;
-    const mm = MINT_IN.exec(s); if (!mm || !ref.has(mm[1])) return;      /* not a watched token: dropped before JSON parsing */
+    const mm = MINT_IN.exec(s); if (!mm) return;
+    let wm = null; if (!ref.has(mm[1])) { if (!wref.size) return; wm = TRADER_IN.exec(s); if (!wm || !wref.has(wm[1])) return; }   /* neither a watched token nor a followed wallet: dropped before JSON parsing */
     let j; try { j = JSON.parse(s); } catch { return; }
     if (!j || typeof j !== 'object' || j.mint !== mm[1]) return;
     let p = null, mc = null, side = null;
@@ -68,6 +72,18 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     }
     if (!p) return;
     u.matched++; inc('tok_trade');
+    /* r162: every single trade (not coalesced) for clients that asked for trades (Pulse) */
+    if (side) {
+      const sig = [j.signature, j.txSignature, j.sig, j.tx].find(x => typeof x === 'string' && SIG.test(x));
+      const w = [j.traderPublicKey, j.txSigner, j.trader, j.user].find(x => typeof x === 'string' && MINT.test(x)) || null;
+      const sol = pos(j.solAmount != null ? j.solAmount : j.quoteAmount), tok = pos(j.tokenAmount != null ? j.tokenAmount : j.baseAmount);
+      let ts = Number(j.timestamp != null ? j.timestamp : j.blockTime); if (ts > 1e12) ts = Math.floor(ts / 1000); if (!(ts > 0)) ts = Math.floor(now() / 1000);
+      if (sig) { const msg = JSON.stringify({ type: 'trade', mint: j.mint, sig, w, side, sol, tok, p, at: ts, src: u.kind }); const t = now();
+        for (const [ws, c] of clients) { if (!c.trades || !(c.mints.has(j.mint) || (w && c.wallets.has(w)))) continue; if (ws.readyState !== 1) continue;
+          if (t - c.tw > 1000) { c.tw = t; c.tn = 0; } if (++c.tn > 30) { inc('tok_trade_rate_drop'); continue; }
+          if ((ws.bufferedAmount || 0) > 256 * 1024) continue; try { ws.send(msg); sent++; } catch {} } }
+    }
+    if (!ref.has(j.mint)) return;
     const prev = pend.get(j.mint);
     pend.set(j.mint, { mint: j.mint, p, mc: mc || (prev && prev.mc) || null, side: side || (prev && prev.side) || null, n: (prev ? prev.n : 0) + 1, src: u.kind, at: now() });
     if (!flushT) flushT = setTimeoutImpl(flush, coalesceMs);
@@ -82,7 +98,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
         try { ws.send(JSON.stringify({ type: 'tok', ...x })); c.sent++; sent++; } catch {} }
     }
   }
-  const watching = () => ref.size > 0;
+  const watching = () => ref.size > 0 || wref.size > 0;
   function reconcile() {
     for (const u of U) { if (watching()) { if (!u.ws && !u.rt) connect(u); else if (u.kind === 'pumpportal') syncPortal(u); } }
     /* nobody watching for a while -> upstreams close (they reopen on the next subscription) */
@@ -96,17 +112,23 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     for (const m of next) if (!c.mints.has(m)) { if (!ref.has(m) && ref.size >= maxMints) { inc('tok_capacity'); next.delete(m); continue; } ref.set(m, (ref.get(m) || 0) + 1); leftAt.delete(m); }
     c.mints = next; reconcile();
   }
+  function setWallets(c, list) {
+    const next = new Set(list.filter(w => typeof w === 'string' && MINT.test(w)).slice(0, maxPerClient));
+    for (const w of c.wallets) if (!next.has(w)) { const n = (wref.get(w) || 1) - 1; if (n > 0) wref.set(w, n); else wref.delete(w); }
+    for (const w of next) if (!c.wallets.has(w)) wref.set(w, (wref.get(w) || 0) + 1);
+    c.wallets = next;
+  }
   function attach(ws, { ip } = {}) {
-    const c = { mints: new Set(), ip, sent: 0, msgs: 0, winAt: now() }; clients.set(ws, c); inc('tok_client_open');
+    const c = { mints: new Set(), wallets: new Set(), trades: false, ip, sent: 0, msgs: 0, winAt: now(), tw: now(), tn: 0 }; clients.set(ws, c); inc('tok_client_open');
     try { ws.send(JSON.stringify({ type: 'hello', max: maxPerClient })); } catch {}
     on(ws, 'message', raw => {
       const t = now(); if (t - c.winAt > 10000) { c.winAt = t; c.msgs = 0; } if (++c.msgs > 30) { inc('tok_client_rate'); return; }
       let m; try { m = JSON.parse(typeof raw === 'string' ? raw : Buffer.from(raw && raw.data !== undefined ? raw.data : raw).toString('utf8')); } catch { return; }
       if (!m || typeof m !== 'object') return;
       if (m.type === 'ping') { try { ws.send('{"type":"pong"}'); } catch {} return; }
-      if (m.type === 'sub' && Array.isArray(m.mints)) setMints(c, m.mints);
+      if (m.type === 'sub' && Array.isArray(m.mints)) { c.trades = m.trades === true; setWallets(c, Array.isArray(m.wallets) ? m.wallets : []); setMints(c, m.mints); }
     });
-    on(ws, 'close', () => { if (!clients.has(ws)) return; setMints(c, []); clients.delete(ws); inc('tok_client_closed'); });
+    on(ws, 'close', () => { if (!clients.has(ws)) return; setWallets(c, []); setMints(c, []); clients.delete(ws); inc('tok_client_closed'); });
     on(ws, 'error', () => { try { ws.close(); } catch {} });
   }
   function beat() {
@@ -114,7 +136,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     for (const u of U) { if (u.open && u.ws && t - u.lastMsg > silentMs) { inc('tok_up_silent'); log('tok-live: ' + u.kind + ' silent ' + Math.round((t - u.lastMsg) / 1000) + 's; reconnecting'); closeUp(u); schedule(u); } }
     reconcile();
   }
-  const stats = () => ({ clients: clients.size, mints: ref.size, sent, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
+  const stats = () => ({ clients: clients.size, mints: ref.size, wallets: wref.size, sent, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
   return Object.freeze({
     start() { if (running || !WebSocketImpl || !U.length) return; running = true; hb = setIntervalImpl(beat, 5000); if (hb && hb.unref) hb.unref();
       st = setIntervalImpl(() => { if (clients.size || ref.size) log('tok-live: ' + JSON.stringify(stats())); }, statsMs); if (st && st.unref) st.unref();
