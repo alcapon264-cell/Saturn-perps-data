@@ -7,7 +7,7 @@ import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, pmWallet = null, pmTrade = null, view = null, isShuttingDown = () => false, livePx = null, tokApi = null }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, pmWallet = null, pmTrade = null, view = null, isShuttingDown = () => false, livePx = null, tokApi = null, stocksApi = null }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -74,6 +74,11 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       }
 
       /* r166 trader activity recorded from the live stream + token names/pictures (src/tok-live.js, src/tok-meta.js). Read-only. */
+      if (stocksApi && path === '/v1/stocks') {
+        if (limiter(ip + '|stocks', 120)) return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '30' });
+        const [code, body] = await stocksApi();
+        return send(res, code, body, { ...cors, 'cache-control': code === 200 ? 'public, max-age=10' : 'no-store' });
+      }
       if (tokApi && (path === '/v1/tok/trader' || path === '/v1/tok/meta')) {
         if (limiter(ip + '|tok-api', 120)) return err(res, 429, 'rate_limited', { ...cors, 'retry-after': '30' });
         const [code, body] = await tokApi(path, q);

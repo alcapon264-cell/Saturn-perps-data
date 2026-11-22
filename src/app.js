@@ -5,6 +5,7 @@ import { MARKET_KEYS, MARKETS, MARKET_META, SOURCE, VIEW_SOURCE, VIEW_MARKET_TAB
 import { createHlWsFeed } from './hl-ws.js';
 import { createTokLive } from './tok-live.js';
 import { createTokMeta } from './tok-meta.js';
+import { createStocks } from './stocks.js';
 import { createMetrics } from './metrics.js';
 import { createLimiter, clientIp } from './limits.js';
 import { createStore } from './store.js';
@@ -150,6 +151,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log, tradingState: pmTrade });   /* r137 Prediction data */
   const pmWallet = createPmWalletVerifier({ fetchImpl: viewFetchImpl, rpcUrl: cfg.polygonRpcUrl });
   const tokLiveRef = { v: null };
+  const stocks = createStocks({ fetchImpl: iconFetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, log });
   const tokMeta = createTokMeta({ fetchImpl: viewFetchImpl, now, tok: () => tokLiveRef.v });
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, pmTrade, isShuttingDown: () => shuttingDown,
@@ -170,6 +172,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
       return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', ready };
     },
     /* PROTECTED (bearer token, disabled when STATUS_TOKEN is unset): the detailed operational view. */
+    stocksApi: async () => { const r = await stocks.get(); return [r.ok ? 200 : 503, r]; },
     tokApi: async (path, q) => {
       const tl = tokLiveRef.v; if (!tl) return [503, { ok: false, error: 'unavailable' }];
       if (path === '/v1/tok/trader') { const w = String(q.get('w') || ''); if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(w)) return [400, { ok: false, error: 'bad_wallet' }];
