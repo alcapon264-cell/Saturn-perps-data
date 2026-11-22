@@ -1,7 +1,8 @@
 /* Wiring. Everything environment-specific is injected so the whole service runs offline in tests. */
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { MARKET_KEYS, MARKETS, MARKET_META, SOURCE, VIEW_SOURCE } from './config.js';
+import { MARKET_KEYS, MARKETS, MARKET_META, SOURCE, VIEW_SOURCE, VIEW_MARKET_TABLE } from './config.js';
+import { createHlWsFeed } from './hl-ws.js';
 import { createMetrics } from './metrics.js';
 import { createLimiter, clientIp } from './limits.js';
 import { createStore } from './store.js';
@@ -21,7 +22,7 @@ import { createPmWalletVerifier } from './pm-wallet.js';
 import { createPmTrade } from './pm-trade.js';
 import { createHlGateway } from './hl-exec.js';
 
-export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
+export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, WebSocketClient = null, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
   const metrics = createMetrics();
   const store = createStore(db);
   const readStore = createStore(readerDb || db);
@@ -34,7 +35,10 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   let view = null;
   const hub = createHub({ cfg, now, metrics, epoch, snapshot: m => view && view.isViewMarket(m) ? viewSnapshot(m) : marketView(m), setIntervalImpl, clearIntervalImpl,
     extraMarkets: () => view ? view.visibleKeys() : [], sourceFor: m => view && view.isViewMarket(m) ? VIEW_SOURCE : SOURCE });
-  view = createViewMarkets({ cfg, db, readerDb, fetchImpl: viewFetchImpl, now, setTimeoutImpl, clearTimeoutImpl, rand, metrics, log, hub, coreIconFallback: m => icons.get(MARKET_KEYS.map(k => MARKETS[k])).get(MARKETS[m]) || null });
+  /* r144: Hyperliquid WebSocket feed for the view markets (replaces REST polling that Hyperliquid answers with 429 from Render's shared IP) */
+  const hlWs = WebSocketClient && cfg.view && cfg.view.markets.length && process.env.HL_WS !== '0' ? createHlWsFeed({ WebSocketImpl: WebSocketClient, now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics,
+    sets: [...new Set(cfg.view.markets.map(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex).filter(d => d != null))].map(dex => ({ dex, coins: cfg.view.markets.filter(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex === dex).flatMap(m => VIEW_MARKET_TABLE[m].venueCoins) })) }) : null;
+  view = createViewMarkets({ hlWs, cfg, db, readerDb, fetchImpl: viewFetchImpl, now, setTimeoutImpl, clearTimeoutImpl, rand, metrics, log, hub, coreIconFallback: m => icons.get(MARKET_KEYS.map(k => MARKETS[k])).get(MARKETS[m]) || null });
   async function viewSnapshot(m) { const rows = await view.marketsView(); const r = rows.find(x => x.market === m); return r ? { market: m, price: r.price, observedAt: r.observedAt, ageMs: r.ageMs, state: r.state } : null; }
   const engine = createCandleEngine({ store, cfg, now, metrics, onCandle: (m, k) => hub.publishCandle(m, k) });
   const recorder = createRecorder({
@@ -143,7 +147,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     getStatus: async () => {
       let dbOk = false; try { dbOk = await store.ping(); } catch { dbOk = false; }
       return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', version: 1, commit: cfg.buildCommit || null, epoch, serverTime: Math.floor(now() / 1000), uptimeSec: Math.floor((now() - startedAt) / 1000), source: SOURCE,
-        ready, leader, db: { ok: dbOk }, lastInitError, recorder: recorder.summary(), view: { enabled: view.enabled, markets: view.KEYS, verification: view.Q, recorder: view.recorder.summary() }, ws: hub.stats(),
+        ready, leader, db: { ok: dbOk }, lastInitError, recorder: recorder.summary(), view: { enabled: view.enabled, markets: view.KEYS, hlWs: hlWs ? hlWs.stats() : null, verification: view.Q, recorder: view.recorder.summary() }, ws: hub.stats(),
         thresholds: { intervalSec: cfg.intervalSec, coverageMin: cfg.coverageMin, jumpPct: cfg.jumpPct, jumpConfirm: cfg.jumpConfirm }, metrics: metrics.snapshot() };
     }
   });
@@ -177,6 +181,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     leader = true; metrics.inc('leader_acquired');
     for (const m of MARKET_KEYS) { await engine.recover(m); }
     await recorder.start(); log('leader: recorder started');
+    if (hlWs) { hlWs.start(); for (let i = 0; i < 25 && !hlWs.mids(''); i++) await new Promise(r => setTimeoutImpl(r, 200)); }   /* r144: give the socket up to 5 s so the first price is not a REST call */
     await view.startLeader().catch(e => log('view: start failed', e && e.message));   /* a view-only failure never affects the SOL/ETH/BTC recorder */
   }
 
@@ -218,11 +223,11 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     timers.forEach(t => clearIntervalImpl(t)); if (initTimer) clearTimeoutImpl(initTimer);
-    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {});
+    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {}); try { hlWs && hlWs.stop(); } catch {}
     hub.closeAll();
     await new Promise(r => server.close(() => r()));
     await db.close().catch(() => {}); if (readerDb) await readerDb.close().catch(() => {});
   }
 
-  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, hlGateway, icons, view, pm }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
+  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, hlGateway, icons, view, pm, hlWs }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
 }

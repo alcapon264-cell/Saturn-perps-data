@@ -41,7 +41,7 @@ export function loadBundledLogos(keys, dir = new URL('../assets/official-logos/'
   return out;
 }
 
-export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, rand = Math.random, metrics, log = () => {}, hub = null, coreIconFallback = () => null, bundledLogos = null }) {
+export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, rand = Math.random, metrics, log = () => {}, hub = null, coreIconFallback = () => null, bundledLogos = null, hlWs = null }) {
   const V = cfg.view; const KEYS = Object.freeze([...(V ? V.markets : [])]);
   const enabled = KEYS.length > 0;
   const T = m => VIEW_MARKET_TABLE[m];
@@ -66,7 +66,15 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
   let lastMids = null, midsInflight = null, lastCtxAt = 0, lastCheckAt = 0, leader = false;
 
   /* ---- Hyperliquid prices: one allMids per market set, shared by every market ---- */
+  /* r144: Hyperliquid WebSocket first (no REST polling, no 429); REST allMids only when the socket's data is not fresh */
+  const WS_FRESH_MS = 30000;
+  function wsMids() {
+    if (!hlWs) return null; const all = {};
+    for (const d of DEXES) { const x = hlWs.mids(d); if (!x || now() - x.at > WS_FRESH_MS) return null; Object.assign(all, x.mids); }
+    return { ok: true, mids: all, ms: 0, via: 'ws' };
+  }
   async function mids() {
+    const w = wsMids(); if (w) { metrics?.inc('view_allmids_ws'); lastMids = { at: now(), r: w }; return w; }
     const t = now();
     if (lastMids && t - lastMids.at < V.minMidsGapMs) return lastMids.r;
     if (midsInflight) return midsInflight;
@@ -85,11 +93,29 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
   }
 
   /* ---- listing + oracle + previous-day price (every 60 s) ---- */
+  /* r144: listing + oracle + previous-day price from the WebSocket (activeAssetCtx) when fresh; REST metaAndAssetCtxs at most every 10 min then
+     (listing/delisting), and as the fallback when the socket has nothing. A coin the socket streams a context for is listed on Hyperliquid. */
+  const CTX_FRESH_MS = 120000, REST_CTX_EVERY = 10 * 60 * 1000; const lastRestCtxAt = {};
+  function wsContexts(d) {
+    if (!hlWs) return false; let any = false;
+    for (const m of KEYS.filter(k => T(k).dex === d)) {
+      const q = Q[m]; const name = (q.coin && T(m).venueCoins.includes(q.coin) ? [q.coin] : T(m).venueCoins).find(c => { const x = hlWs.ctx(c); return x && now() - x.at <= CTX_FRESH_MS; });
+      if (!name) continue; const c = hlWs.ctx(name); any = true;
+      if (!q.listed || q.listedReason === 'not_checked') { q.listed = true; q.listedReason = null; q.coin = name; upsertMarket(m, name).catch(() => {}); }
+      q.ctx = { oraclePx: c.oraclePx, prevDayPx: c.prevDayPx, midPx: c.midPx, markPx: c.markPx, dayNtlVlm: c.dayNtlVlm, openInterest: c.openInterest, at: c.at };
+      if (q.listed && CHK(m) === 'oracle') oracleCheck(m, c);
+    }
+    return any;
+  }
   async function readContexts() {
     lastCtxAt = now();
     for (const d of DEXES) {
+      const ws = wsContexts(d);
+      if (ws && now() - (lastRestCtxAt[d] || 0) < REST_CTX_EVERY) { metrics?.inc('view_ctx_ws'); continue; }
+      if (ws) lastRestCtxAt[d] = now();   /* with a live socket, REST is only a slow listing check: tried at most every 10 min, success or not */
       const r = await hl.metaAndAssetCtxs(d);
-      if (!r.ok) { metrics?.inc('view_ctx_failed'); log('view: hyperliquid contexts failed', d || 'main', r.outcome); continue; }   /* keep the previous result: an unreachable venue is not proof of delisting */
+      if (!r.ok) { metrics?.inc('view_ctx_failed'); if (!ws) log('view: hyperliquid contexts failed', d || 'main', r.outcome); continue; }   /* keep the previous result (or the WebSocket's): an unreachable venue is not proof of delisting */
+      lastRestCtxAt[d] = now();
       for (const m of KEYS.filter(k => T(k).dex === d)) {
         const q = Q[m]; const name = T(m).venueCoins.find(c => r.coins.has(c) && !r.coins.get(c).delisted) || T(m).venueCoins.find(c => r.coins.has(c));
         const c = name ? r.coins.get(name) : null;
