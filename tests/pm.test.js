@@ -146,7 +146,8 @@ test('R139: a Gamma response larger than the old 4 MB cap is accepted; one above
   const pm = createPmData({ fetchImpl: fakeFetch([[/\/events\?active=true/, () => big]]), log: (n, d) => logs.push([n, d]) });
   const f = await pm.feed('trending', 0, 8); assert.equal(f.markets.length, 1, 'a ~5 MB events page now loads');
   const tiny = createPmData({ fetchImpl: fakeFetch([[/\/events\?active=true/, () => big]]), maxBodyBytes: 1024, log: (n, d) => logs.push([n, d]) });
-  await assert.rejects(tiny.feed('trending', 0, 8), /body_too_large/);
+  const t2 = await tiny.feed('trending', 0, 8); assert.equal(t2.markets.length, 0, 'r176: a page that is still too big as one event is left out, not fatal');
+  assert.ok(logs.some(([n]) => n === 'prediction_event_skipped'));
   const l = logs.find(([n]) => n === 'prediction_upstream_failure')[1];
   assert.equal(l.reason, 'body_too_large'); assert.ok(l.bytes > 1024); assert.equal(l.status, null); assert.equal(l.host, 'gamma-api.polymarket.com'); assert.equal(l.path, '/events');
 });

@@ -110,7 +110,7 @@ test('r143.1: Live/Breaking read the event pool in pages of 20 (one 100-event re
     if (q.get('offset') === '40') return new Response('too big', { status: 200, headers: { 'content-length': '1' } }).text().then(() => { throw Object.assign(new Error('body_too_large'), { logged: true }); });
     const off = +q.get('offset'); return new Response(JSON.stringify(Array.from({ length: off >= 80 ? 5 : 20 }, (_, k) => ev(off + k, (off + k) % 3 === 0)))); } });
   const live = await pm.feed('live', 0, 8);
-  assert.ok(seen.every(([l]) => l === '20'), 'never asks for more than 20 events at once');
+  assert.ok(seen.every(([l]) => +l <= 20), 'never asks for more than 20 events at once (r176: a too-big page is split smaller)');
   assert.ok(live.markets.length === 8 && live.markets.every(m => m.live), 'live events from the pages that loaded');
   const br = await pm.feed('breaking', 0, 5); assert.equal(br.markets.length, 5);
 });

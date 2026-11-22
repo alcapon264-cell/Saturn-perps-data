@@ -168,7 +168,23 @@ export function createPmData({ fetchImpl = globalThis.fetch, limiter, now = Date
    * (then unsorted) and the working field is remembered; every fallback is logged so a Polymarket API change shows up in Render logs. */
   const orderIx = { trending: 0, breaking: 0, new: 0 };
   const evQuery = (tag, offset, limit, o) => '/events?active=true&closed=false&archived=false' + (o ? '&order=' + o + '&ascending=false' : '') + '&limit=' + limit + '&offset=' + offset + (tag ? '&tag_slug=' + encodeURIComponent(tag) : '');
+  /* r176: one Gamma page can still be huge when a single event carries hundreds of markets (12 trending events = 17.5 MB, 2026-11-22, the
+   * Trending tab showed "unavailable"). A page that is too big is split in halves down to single events; a single event that is still too
+   * big is left out (a null placeholder keeps paging right). Pages known to be too big are split straight away for 10 minutes. */
+  const tooBig = new Map();
   async function events(tag, offset, limit, sort = 'trending', ttl = 30000) {
+    const key = (tag || '') + '|' + offset + '|' + limit + '|' + sort, tb = tooBig.get(key);
+    if (!(tb && now() - tb < 600000)) {
+      try { return await events1(tag, offset, limit, sort, ttl); }
+      catch (e) { if (!(e && e.message === 'body_too_large')) throw e; tooBig.set(key, now()); if (tooBig.size > 200) tooBig.delete(tooBig.keys().next().value); }
+    }
+    if (limit <= 1) { log('prediction_event_skipped', { tag, offset, sort }); return [null]; }
+    const h = Math.ceil(limit / 2), a = await events(tag, offset, h, sort, ttl);
+    if (!Array.isArray(a) || a.length < h) return a;
+    const b = await events(tag, offset + h, limit - h, sort, ttl);
+    return Array.isArray(b) ? a.concat(b) : a;
+  }
+  async function events1(tag, offset, limit, sort = 'trending', ttl = 30000) {
     const F = ORDER_FIELDS[sort] || ORDER_FIELDS.trending;
     for (let i = orderIx[sort] || 0; i < F.length; i++) {
       try { const v = await get(GAMMA, evQuery(tag, offset, limit, F[i]), ttl); orderIx[sort] = i; return v; }
@@ -181,7 +197,7 @@ export function createPmData({ fetchImpl = globalThis.fetch, limiter, now = Date
   async function pool(sort, ttl) {
     const out = []; let ok = 0, lastErr = null;
     for (let off = 0; off < BREAK_POOL; off += POOL_PAGE) {
-      try { const evs = await events(null, off, POOL_PAGE, sort, ttl); if (!Array.isArray(evs)) throw new Error('malformed'); ok++; out.push(...evs); if (evs.length < POOL_PAGE) break; }
+      try { const evs = await events(null, off, POOL_PAGE, sort, ttl); if (!Array.isArray(evs)) throw new Error('malformed'); ok++; out.push(...evs.filter(Boolean)); if (evs.length < POOL_PAGE) break; }
       catch (e) { lastErr = e; }
     }
     if (!ok) throw lastErr || new Error('pool_failed');

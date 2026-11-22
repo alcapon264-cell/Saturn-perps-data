@@ -52,7 +52,7 @@ export function createStocks({ fetchImpl = globalThis.fetch, jupBase = TOKENS_BA
   const ju = new URL(jupBase); if (ju.protocol !== 'https:' || ju.hostname !== TOKENS_HOST) throw new Error('tokens_base_not_allowed');
   const kind = new Map(STOCKS), order = new Map(STOCKS.map(([t], i) => [t, i]));
   let mints = new Map(Object.entries(SEED).map(([t, m]) => [t, { mint: m, name: '' }]));   /* ticker -> {mint,name} (verified) */
-  let names = new Map(), px = new Map(), pxAt = 0, discAt = 0, discNext = 0, discBusy = null, pxBusy = null, err = null;
+  let icons = new Map(), names = new Map(), px = new Map(), pxAt = 0, discAt = 0, discNext = 0, discBusy = null, pxBusy = null, err = null;
   async function getJson(url, headers = {}) {
     const u = new URL(url); if (u.protocol !== 'https:' || (u.hostname !== DEX_HOST && u.hostname !== TOKENS_HOST)) throw new Error('host_not_allowed');
     const ac = new AbortController(); let timer; const dl = new Promise((_, rej) => { timer = setTimeoutImpl(() => { ac.abort(); rej(new Error('deadline')); }, timeoutMs); }); dl.catch(() => {});
@@ -73,7 +73,8 @@ export function createStocks({ fetchImpl = globalThis.fetch, jupBase = TOKENS_BA
     const headers = keyHeader && key ? { [keyHeader]: key } : {};
     const ms = [...new Set([...cand.values()].map(c => c.mint))];
     const arr = await getJson(ju.href.replace(/\/$/, '') + '/search?query=' + encodeURIComponent(ms.join(',')), headers);
-    const ok = new Set((Array.isArray(arr) ? arr : []).filter(x => x && x.isVerified === true && typeof x.id === 'string').map(x => x.id));
+    const vs = (Array.isArray(arr) ? arr : []).filter(x => x && x.isVerified === true && typeof x.id === 'string'), ok = new Set(vs.map(x => x.id));
+    for (const x of vs) if (iconOk(x.icon)) icons.set(x.id, x.icon);
     const next = new Map([...mints].filter(([t, v]) => SEED[t] === v.mint));
     for (const [t, c] of cand) if (ok.has(c.mint) || SEED[t] === c.mint) next.set(t, { mint: c.mint, name: c.name });
     const dropped = [...cand].filter(([t, c]) => !next.has(t) || next.get(t).mint !== c.mint).map(([t]) => t);
@@ -96,7 +97,7 @@ export function createStocks({ fetchImpl = globalThis.fetch, jupBase = TOKENS_BA
   }
   function kickPrices() { if (!pxBusy) pxBusy = refreshPrices().catch(e => { err = e && e.message; log('stocks_prices_failed', err); return []; }).finally(() => { pxBusy = null; }); return pxBusy; }
   function rowOf(t, v) { const p = px.get(v.mint); if (!p) return null;
-    return { mint: v.mint, ticker: t, symbol: t + 'x', name: v.name || names.get(t) || t, kind: kind.get(t) || 'equity', icon: p.icon, price: p.price, chg24: p.chg24, vol24: p.vol24 }; }
+    return { mint: v.mint, ticker: t, symbol: t + 'x', name: v.name || names.get(t) || t, kind: kind.get(t) || 'equity', icon: icons.get(v.mint) || p.icon, price: p.price, chg24: p.chg24, vol24: p.vol24 }; }
   function list() { return [...mints].map(([t, v]) => rowOf(t, v)).filter(Boolean).sort((a, b) => order.get(a.ticker) - order.get(b.ticker)); }
   async function get() {
     kickDiscover();
