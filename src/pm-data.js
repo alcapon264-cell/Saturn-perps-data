@@ -172,19 +172,30 @@ export function createPmData({ fetchImpl = globalThis.fetch, limiter, now = Date
       catch (e) { if (!(e && e.status >= 400 && e.status < 500) || i === F.length - 1) throw e; log('prediction_sort_fallback', { sort, from: F[i], to: F[i + 1], status: e.status }); }
     }
   }
-  const BREAK_POOL = 100, BREAK_MIN_VOL24 = 5000;
+  const BREAK_POOL = 100, BREAK_MIN_VOL24 = 5000, POOL_PAGE = 20;
+  /* r143.1: live Gamma responses embed every market of every event; 100 events in one response exceeded the 16 MB cap in production
+   * (prediction_upstream_failure reason=body_too_large, 2026-11-22). Read the pool in pages of 20; a page that fails is skipped, not fatal. */
+  async function pool(sort, ttl) {
+    const out = []; let ok = 0, lastErr = null;
+    for (let off = 0; off < BREAK_POOL; off += POOL_PAGE) {
+      try { const evs = await events(null, off, POOL_PAGE, sort, ttl); if (!Array.isArray(evs)) throw new Error('malformed'); ok++; out.push(...evs); if (evs.length < POOL_PAGE) break; }
+      catch (e) { lastErr = e; }
+    }
+    if (!ok) throw lastErr || new Error('pool_failed');
+    return out;
+  }
   async function feed(cat, offset, limit, tagOverride = null) {
     const tags = tagOverride ? [tagOverride] : PM_CATEGORIES[cat]; if (!tags) throw Object.assign(new Error('bad_category'), { code: 400 });
     const sort = tagOverride ? 'trending' : SORT_OF(cat);
     if (sort === 'live') {
       /* Live = events Polymarket currently flags live (in-play games etc.), from the most traded open events */
-      const evs = await events(null, 0, BREAK_POOL, 'live', 30000); if (!Array.isArray(evs)) throw new Error('malformed');
+      const evs = await pool('live', 30000);
       const all = evs.filter(e => e && e.live === true).map(eventCard).filter(Boolean);
       return { cat, sort, tag: null, offset, nextOffset: offset + limit < all.length ? offset + limit : null, markets: all.slice(offset, offset + limit) };
     }
     if (sort === 'breaking') {
       /* Breaking = biggest 24h probability moves among actively traded open events (Polymarket's oneDayPriceChange). */
-      const evs = await events(null, 0, BREAK_POOL, 'breaking', 60000); if (!Array.isArray(evs)) throw new Error('malformed');
+      const evs = await pool('breaking', 60000);
       const all = evs.map(eventCard).filter(c => c && c.maxMove != null && Math.abs(c.maxMove) > 0 && (c.volume24h || 0) >= BREAK_MIN_VOL24)
         .sort((a, b) => Math.abs(b.maxMove) - Math.abs(a.maxMove));
       const page = all.slice(offset, offset + limit);
