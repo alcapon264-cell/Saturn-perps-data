@@ -3,6 +3,7 @@ import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { MARKET_KEYS, MARKETS, MARKET_META, SOURCE, VIEW_SOURCE, VIEW_MARKET_TABLE } from './config.js';
 import { createHlWsFeed } from './hl-ws.js';
+import { createTokLive } from './tok-live.js';
 import { createMetrics } from './metrics.js';
 import { createLimiter, clientIp } from './limits.js';
 import { createStore } from './store.js';
@@ -22,7 +23,7 @@ import { createPmWalletVerifier } from './pm-wallet.js';
 import { createPmTrade } from './pm-trade.js';
 import { createHlGateway } from './hl-exec.js';
 
-export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, WebSocketClient = null, hlWsUrl = undefined, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
+export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, WebSocketClient = null, hlWsUrl = undefined, tokLiveUrls = undefined, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
   const metrics = createMetrics();
   const store = createStore(db);
   const readStore = createStore(readerDb || db);
@@ -176,16 +177,21 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
 
   const server = http.createServer(handler);
   const wss = new WebSocketServer({ noServer: true, maxPayload: cfg.ws.maxPayload });
+  /* r158: Discover token list live prices (src/tok-live.js) on its own path; TOK_LIVE=0 turns it off */
+  const tokLive = WebSocketClient && process.env.TOK_LIVE !== '0' ? createTokLive({ WebSocketImpl: WebSocketClient, ...(tokLiveUrls ? { urls: tokLiveUrls } : {}),
+    upstreams: String(process.env.TOK_LIVE_UPSTREAMS || 'pumpapi,pumpportal').split(',').map(x => x.trim()), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics }) : null;
+  const tokWss = tokLive ? new WebSocketServer({ noServer: true, maxPayload: 4096 }) : null;
   const ipConns = new Map();
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => {});   /* a reset during the handshake must not surface as an uncaught 'error' event */
     const ip = clientIp(req, cfg.http.trustedProxyHops), o = req.headers.origin;
-    const bad = req.url !== '/perps/live' || (o && !cfg.allowedOrigins.has(o)) || shuttingDown || (ipConns.get(ip) || 0) >= cfg.ws.maxConnPerIp || limiter(ip + '|ws-upgrade', 30);
+    const tok = req.url === '/tokens/live' && !!tokWss;
+    const bad = (req.url !== '/perps/live' && !tok) || (o && !cfg.allowedOrigins.has(o)) || shuttingDown || (ipConns.get(ip) || 0) >= cfg.ws.maxConnPerIp || limiter(ip + '|ws-upgrade', 30);
     if (bad) { metrics.inc('ws_upgrade_refused'); socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
-    wss.handleUpgrade(req, socket, head, c => {
+    (tok ? tokWss : wss).handleUpgrade(req, socket, head, c => {
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1);
       c.on('close', () => { const n = (ipConns.get(ip) || 1) - 1; n ? ipConns.set(ip, n) : ipConns.delete(ip); });
-      hub.attach(c, { ip });
+      if (tok) tokLive.attach(c, { ip }); else hub.attach(c, { ip });
     });
   });
 
@@ -232,6 +238,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
 
   async function start({ port = cfg.port, host = '0.0.0.0' } = {}) {
     await new Promise(r => server.listen(port, host, r));
+    if (tokLive) tokLive.start();
     log('listening on ' + server.address().port);
     await initWithRetry();
     every(() => ready && becomeLeader(), 15000);
@@ -245,11 +252,11 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     timers.forEach(t => clearIntervalImpl(t)); if (initTimer) clearTimeoutImpl(initTimer);
-    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {}); try { hlWs && hlWs.stop(); } catch {} if (liveTimer) clearIntervalImpl(liveTimer);
+    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {}); try { hlWs && hlWs.stop(); } catch {} try { tokLive && tokLive.stop(); } catch {} if (liveTimer) clearIntervalImpl(liveTimer);
     hub.closeAll();
     await new Promise(r => server.close(() => r()));
     await db.close().catch(() => {}); if (readerDb) await readerDb.close().catch(() => {});
   }
 
-  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, hlGateway, icons, view, pm, hlWs }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
+  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, hlGateway, icons, view, pm, hlWs, tokLive }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
 }
