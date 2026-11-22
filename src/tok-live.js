@@ -33,7 +33,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
   const ref = new Map();              /* mint -> number of clients watching */
   const leftAt = new Map();           /* mint -> when its last watcher left (unsubscribed upstream after graceMs) */
   const pend = new Map();             /* mint -> pending update */
-  const BIG = [], lastPx = new Map();  /* r163: recent big buys (any token) and the last trade price per token */
+  const BIG = [], BIG5 = [], lastPx = new Map();  /* r163: recent big buys (any token) and the last trade price per token */
   const wref = new Map();             /* r162: wallet -> number of clients following it (Pulse "Following") */
   let flushT = null, running = false, hb = null, st = null, sent = 0;
   /* r166 recorder (memory only, nothing written to any database): every Pump.fun / PumpSwap trade seen on the stream is kept per wallet
@@ -125,7 +125,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
       lastPx.set(j.mint, { p, at: now() }); if (lastPx.size > 5000) lastPx.delete(lastPx.keys().next().value);
       const isBig = big && side === 'buy' && sol >= BIG_STORE_MIN;
       if (sig) { const rec = { type: 'trade', mint: j.mint, sig, w, side, sol, tok, p, at: ts, src: u.kind, name: clean(j.name), symbol: clean(j.symbol), mcUsd: pos(j.marketCapUsd) };
-        if (isBig) { rec.big = true; BIG.push(rec); if (BIG.length > 300) BIG.shift(); }
+        if (isBig) { rec.big = true; BIG.push(rec); if (BIG.length > 300) BIG.shift(); if (sol >= 3) { BIG5.push(rec); if (BIG5.length > 400) BIG5.shift(); } }
         const msg = JSON.stringify(rec); const t = now();
         for (const [ws, c] of clients) { if (!c.trades || !(c.mints.has(j.mint) || (w && c.wallets.has(w)) || (isBig && c.bigMin > 0 && sol >= c.bigMin))) continue; if (ws.readyState !== 1) continue;
           if (t - c.tw > 1000) { c.tw = t; c.tn = 0; } if (++c.tn > 30) { inc('tok_trade_rate_drop'); continue; }
@@ -178,7 +178,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
         c.bigMin = c.trades && Number(m.bigMin) >= BIG_STORE_MIN ? Math.min(1000, Number(m.bigMin)) : 0;
         setWallets(c, Array.isArray(m.wallets) ? m.wallets : []); const before = new Set(c.mints); setMints(c, m.mints);
         /* r163: on (re)subscribe -> recent big buys at once, and the last known price of every newly watched token */
-        if (c.bigMin && was !== c.bigMin) { for (const r of BIG.filter(x => x.sol >= c.bigMin).slice(-60)) { try { ws.send(JSON.stringify({ ...r, recent: true })); } catch {} } }
+        if (c.bigMin && was !== c.bigMin) { for (const r of (c.bigMin >= 3 ? BIG5 : BIG).filter(x => x.sol >= c.bigMin).slice(c.bigMin >= 3 ? -150 : -60)) { try { ws.send(JSON.stringify({ ...r, recent: true })); } catch {} } }
         for (const mt of c.mints) { if (before.has(mt)) continue; const lp = lastPx.get(mt); if (lp) { try { ws.send(JSON.stringify({ type: 'tok', mint: mt, p: lp.p, n: 0, src: 'last', at: lp.at })); } catch {} } } }
     });
     on(ws, 'close', () => { if (!clients.has(ws)) return; setWallets(c, []); setMints(c, []); clients.delete(ws); inc('tok_client_closed'); });
