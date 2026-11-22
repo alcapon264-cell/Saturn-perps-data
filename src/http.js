@@ -7,7 +7,7 @@ import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, pmWallet = null, view = null, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, pmWallet = null, pmTrade = null, view = null, isShuttingDown = () => false }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -33,7 +33,8 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
       const path = url.pathname, q = url.searchParams;
       const isGw = !!gateway && path.startsWith('/v1/perps/jup/');
       const isHl = !!hlGateway && path.startsWith('/v1/perps/hl/');   /* r128 Hyperliquid relay: src/hl-exec.js */
-      if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'access-control-allow-methods': isGw || isHl ? 'GET, POST, OPTIONS' : 'GET, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600' }); return res.end(); }
+      const isPmx = !!pmTrade && path.startsWith('/v1/pm/x/');   /* r143 Prediction trading support: src/pm-trade.js (builder signing for wallet setup only; no orders) */
+      if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors, 'access-control-allow-methods': isGw || isHl || isPmx ? 'GET, POST, OPTIONS' : 'GET, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600' }); return res.end(); }
       const ip = clientIp(req, cfg.http.trustedProxyHops);
       if (isGw) {
         if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
@@ -44,6 +45,11 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
         if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
         const [code, body, extra] = await hlGateway.handle(req, path, q, ip);
         return send(res, code, body, { ...cors, ...(extra || {}) });
+      }
+      if (isPmx) {
+        if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
+        const [code, body] = await pmTrade.handle(req, path, q, ip);
+        return send(res, code, body, { ...cors, 'cache-control': 'no-store' });
       }
       if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
       if (path === '/v1/pm/wallet/status') {

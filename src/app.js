@@ -18,6 +18,7 @@ import { toContract, REGISTRY } from './markets.js';
 import { createPythClient } from './pyth.js';
 import { createPmData } from './pm-data.js';
 import { createPmWalletVerifier } from './pm-wallet.js';
+import { createPmTrade } from './pm-trade.js';
 import { createHlGateway } from './hl-exec.js';
 
 export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
@@ -120,10 +121,11 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
           marginMode: d && d.listed ? (d.onlyIsolated ? 'isolated' : 'cross') : null, maxLeverage: d && d.listed ? Math.min(d.maxLeverage, H ? H.maxLeverage : d.maxLeverage) : null, ready: !blocker, blocker } };
     };
   }
-  const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log });   /* r137 Prediction (read-only Polymarket data) */
+  const pmTrade = createPmTrade({ env: cfg.pmEnv || process.env, fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log });   /* r143 Prediction trading support (no orders server-side) */
+  const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log, tradingState: pmTrade });   /* r137 Prediction data */
   const pmWallet = createPmWalletVerifier({ fetchImpl: viewFetchImpl, rpcUrl: cfg.polygonRpcUrl });
   const handler = createHttpHandler({
-    cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, isShuttingDown: () => shuttingDown,
+    cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, pmTrade, isShuttingDown: () => shuttingDown,
     /* r124: one contract for all 11 markets (src/markets.js) */
     /* r128: a Hyperliquid market stops being "view only" ONLY when real-money Hyperliquid execution is fully enabled (code + env) AND the market is in
      * HL_VERIFIED_MARKETS. r132: every row also carries its computed `execution`; toContract() derives `executable` from it (Hyperliquid) or keeps
@@ -222,5 +224,5 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     await db.close().catch(() => {}); if (readerDb) await readerDb.close().catch(() => {});
   }
 
-  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, hlGateway, icons, view }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
+  return { server, wss, start, shutdown, init, idle, retention, parts: { cfg, db, store, recorder, engine, hub, metrics, limiter, handler, gateway, hlGateway, icons, view, pm }, get leader() { return leader; }, get ready() { return ready; }, becomeLeader };
 }
