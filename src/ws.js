@@ -8,7 +8,7 @@ export function createHub({ cfg, now = Date.now, metrics, snapshot, epoch, setIn
   /* r120: verified view-only markets may also be subscribed (price data only; no trading path exists on this socket) */
   const allowed = async () => { let x = []; try { x = await extraMarkets(); } catch { x = []; } return [...MARKET_KEYS, ...x.filter(k => !MARKET_KEYS.includes(k))]; };
   const L = cfg.ws; const clients = new Set(); let nextId = 1;
-  const seqSeen = new Map();
+  const seqSeen = new Map(), seqOut = new Map(), liveAt = new Map();
 
   function raw(c, obj, { droppable = false } = {}) {
     const ws = c.ws; if (ws.readyState !== 1) return false;
@@ -62,7 +62,13 @@ export function createHub({ cfg, now = Date.now, metrics, snapshot, epoch, setIn
   const eachSub = (market, fn) => { for (const c of clients) if (!c.closed && c.markets.has(market)) fn(c); };
   return Object.freeze({
     attach,
-    publishTick(t) { eachSub(t.market, c => raw(c, { type: 'perps_tick', market: t.market, price: t.price, observedAt: t.observedAt, seq: t.seq, source: sourceFor(t.market), provider: REGISTRY[t.market] ? REGISTRY[t.market].provider : null, ...(t.persisted === false ? { persisted: false } : {}) }, { droppable: true })); },
+    /* r144.3: ticks come from two places: the 15 s recorder samples and (when available) the 1 s live feed. The hub numbers them itself
+       (one rising seq per market) and, while the live feed is fresh (< 5 s), drops the slower samples so the price never flips between them. */
+    publishTick(t, { live = false } = {}) {
+      const m = t.market, n0 = now(); if (live) liveAt.set(m, n0); else if (n0 - (liveAt.get(m) || 0) < 5000) { metrics?.inc('ws_tick_superseded'); return; }
+      const seq = (seqOut.get(m) || 0) + 1; seqOut.set(m, seq); t = { ...t, seq };
+      eachSub(t.market, c => raw(c, { type: 'perps_tick', market: t.market, price: t.price, observedAt: t.observedAt, seq: t.seq, source: live ? 'hyperliquid:allMids' : sourceFor(t.market), ...(live ? { live: true } : {}), provider: REGISTRY[t.market] ? REGISTRY[t.market].provider : null, ...(t.persisted === false ? { persisted: false } : {}) }, { droppable: true }));
+    },
     publishCandle(market, k) {
       const final = k.status === 'complete';
       eachSub(market, c => { if (!c.tfs.has(k.tf)) return; raw(c, { type: 'perps_candle', market, tf: k.tf, final, candle: { t: Math.floor(k.startMs / 1000), o: k.o, h: k.h, l: k.l, c: k.c, n: k.n, status: k.status, ...(final ? { valid: k.valid } : {}) } }, { droppable: !final }); });

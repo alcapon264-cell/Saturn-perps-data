@@ -7,7 +7,7 @@ import { clientIp } from './limits.js';
 
 const HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
 
-export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, pmWallet = null, pmTrade = null, view = null, isShuttingDown = () => false }) {
+export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth, getStatus, getMarketsView, gateway = null, hlGateway = null, pyth = null, pm = null, pmWallet = null, pmTrade = null, view = null, isShuttingDown = () => false, livePx = null }) {
   const cache = new Map(); /* key -> {at, v} ; plus in-flight de-duplication */
   const inflight = new Map();
   async function cached(key, ttlMs, fn) {
@@ -59,6 +59,13 @@ export function createHttpHandler({ cfg, store, limiter, now, metrics, getHealth
         if (isShuttingDown()) return err(res, 503, 'shutting_down', cors);
         const result = await pmWallet.verify();
         return send(res, 200, { ok: true, wallet: result }, { ...cors, 'cache-control': 'no-store' });
+      }
+      /* r144.3 live coin prices for Prediction Up/Down (Hyperliquid mids pushed to this server; <= 5 s old or 503). Tiny, never cached. */
+      if (path === '/v1/pm/px') {
+        if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);
+        if (limiter(ip + '|pm-px', 150)) return err(res, 429, 'rate_limited', cors);
+        const v = livePx ? livePx() : null; if (!v) return send(res, 503, { ok: false, error: 'live_prices_unavailable' }, { ...cors, 'cache-control': 'no-store' });
+        return send(res, 200, { ok: true, ...v }, { ...cors, 'cache-control': 'no-store' });
       }
       if (pm && path.startsWith('/v1/pm/')) {   /* r137 Saturn Prediction: read-only Polymarket data (src/pm-data.js) */
         if (req.method !== 'GET') return err(res, 405, 'method_not_allowed', cors);

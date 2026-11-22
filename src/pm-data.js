@@ -7,7 +7,10 @@
  * estimate is Polymarket's taker fee (its published category rate x shares x p x (1-p)), and it is labelled as an estimate.
  * Routes (GET only):  /v1/pm/status · /v1/pm/updown?asset=&interval= · /v1/pm/positions?user= · /v1/pm/feed?cat=&offset=&tag= · /v1/pm/tags?cat= · /v1/pm/event?slug= · /v1/pm/search?q= · /v1/pm/market?slug= · /v1/pm/history?token=&range= · /v1/pm/quote?slug=&outcome=&usd=
  * Trading is NOT implemented here: execution needs a Polymarket Builder account and a per-user Deposit Wallet (Polygon, pUSD). */
-export const PM_HOSTS = Object.freeze(['gamma-api.polymarket.com', 'clob.polymarket.com', 'data-api.polymarket.com']);
+export const PM_HOSTS = Object.freeze(['gamma-api.polymarket.com', 'clob.polymarket.com', 'data-api.polymarket.com', 'polymarket.com']);
+/* r144.2 Polymarket's own site API for crypto Up/Down: the window's Chainlink opening price (the "price to beat"). Read-only GET, no keys. */
+const SITE = 'https://polymarket.com';
+const PTB_VARIANTS = Object.freeze({ '5m': ['fiveminute', 'five'], '15m': ['fifteen', 'fifteenminute'] });
 /* r143: crypto Up/Down windows. Slug pattern `{asset}-updown-{5m|15m}-{window start, unix s}` (one event per window). */
 export const UPDOWN = Object.freeze({ assets: ['btc', 'eth', 'sol', 'xrp', 'doge', 'bnb', 'hype'], intervals: { '5m': 300, '15m': 900 } });
 const GAMMA = 'https://gamma-api.polymarket.com', CLOB = 'https://clob.polymarket.com', DATA = 'https://data-api.polymarket.com';
@@ -238,9 +241,28 @@ export function createPmData({ fetchImpl = globalThis.fetch, limiter, now = Date
       /* Polymarket publishes the window's opening price as the "price to beat". Field placement is not in the public docs; read it only from
        * known spots and send null otherwise — the app then shows no target rather than a guessed one. */
       const meta = [ev.eventMetadata, ev.markets && ev.markets[0] && ev.markets[0].eventMetadata, ev].find(o => o && typeof o === 'object' && num(o.priceToBeat) != null);
-      return { ...v, asset, interval, windowStart: st, windowEnd: st + sec, priceToBeat: meta ? num(meta.priceToBeat) : null, priceToBeatSource: meta ? 'gamma:priceToBeat' : null };
+      if (meta) return { ...v, asset, interval, windowStart: st, windowEnd: st + sec, priceToBeat: num(meta.priceToBeat), priceToBeatSource: 'gamma:priceToBeat' };
+      /* r144.2: Gamma does not carry it; Polymarket's site API does (openPrice = Chainlink price at the window open). Only for a window that has started. */
+      const ptb = st <= t ? await priceToBeat(asset, interval, st, sec).catch(() => null) : null;
+      return { ...v, asset, interval, windowStart: st, windowEnd: st + sec, priceToBeat: ptb ? ptb.p : null, priceToBeatSource: ptb ? 'polymarket:crypto-price' : null };
     }
     throw Object.assign(new Error('no_open_window'), { code: 404 });
+  }
+  /* r144.2 price to beat: GET polymarket.com/api/crypto/crypto-price?symbol=&eventStartTime=&variant=&endDate= -> { openPrice, closePrice, completed }.
+     The window-length name is not in Polymarket's public docs, so the known spellings are tried and the one that answers is remembered.
+     An opening price never changes, so it is kept for the window; a miss is retried at most every 20 s (the shared response cache). */
+  const ptbKnown = new Map(), ptbVar = {};
+  async function priceToBeat(asset, interval, st, sec) {
+    const key = asset + interval + st; if (ptbKnown.has(key)) return ptbKnown.get(key);
+    const isoS = s => new Date(s * 1000).toISOString().replace('.000Z', 'Z');
+    const vs = PTB_VARIANTS[interval] || []; const order = ptbVar[interval] ? [ptbVar[interval], ...vs.filter(x => x !== ptbVar[interval])] : vs;
+    for (const variant of order) {
+      let r; try { r = await get(SITE, '/api/crypto/crypto-price?symbol=' + asset.toUpperCase() + '&eventStartTime=' + encodeURIComponent(isoS(st)) + '&variant=' + variant + '&endDate=' + encodeURIComponent(isoS(st + sec)), 20000); }
+      catch (e) { if (e && e.status >= 400 && e.status < 500) continue; return null; }
+      const p = r && typeof r === 'object' ? num(r.openPrice) : null;
+      if (p != null && p > 0) { ptbVar[interval] = variant; const v = { p }; ptbKnown.set(key, v); if (ptbKnown.size > 200) ptbKnown.delete(ptbKnown.keys().next().value); return v; }
+    }
+    return null;
   }
   /* user positions from the public Data API (wallet address only; no auth) */
   async function positions(user) {

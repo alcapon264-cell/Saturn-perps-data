@@ -22,7 +22,7 @@ import { createPmWalletVerifier } from './pm-wallet.js';
 import { createPmTrade } from './pm-trade.js';
 import { createHlGateway } from './hl-exec.js';
 
-export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, WebSocketClient = null, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
+export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, iconFetchImpl = fetchImpl, viewFetchImpl = fetchImpl, hlFetchImpl = null, pythFetchImpl = null, pmFetchImpl = null, WebSocketServer, WebSocketClient = null, hlWsUrl = undefined, migrationFiles = [], now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, rand = Math.random, taps = {}, log = (...a) => console.log('[saturn-perps-data]', ...a), jupiterBase } = {}) {
   const metrics = createMetrics();
   const store = createStore(db);
   const readStore = createStore(readerDb || db);
@@ -36,8 +36,27 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const hub = createHub({ cfg, now, metrics, epoch, snapshot: m => view && view.isViewMarket(m) ? viewSnapshot(m) : marketView(m), setIntervalImpl, clearIntervalImpl,
     extraMarkets: () => view ? view.visibleKeys() : [], sourceFor: m => view && view.isViewMarket(m) ? VIEW_SOURCE : SOURCE });
   /* r144: Hyperliquid WebSocket feed for the view markets (replaces REST polling that Hyperliquid answers with 429 from Render's shared IP) */
-  const hlWs = WebSocketClient && cfg.view && cfg.view.markets.length && process.env.HL_WS !== '0' ? createHlWsFeed({ WebSocketImpl: WebSocketClient, now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics,
+  const hlWs = WebSocketClient && cfg.view && cfg.view.markets.length && process.env.HL_WS !== '0' ? createHlWsFeed({ WebSocketImpl: WebSocketClient, ...(hlWsUrl ? { url: hlWsUrl } : {}), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics,
     sets: [...new Set(cfg.view.markets.map(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex).filter(d => d != null))].map(dex => ({ dex, coins: cfg.view.markets.filter(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex === dex).flatMap(m => VIEW_MARKET_TABLE[m].venueCoins) })) }) : null;
+  /* r144.3 LIVE PRICES: Hyperliquid's socket pushes every coin's mid price several times a second. The latest one per market is published to the
+     app's Perps socket at most once a second (and only when it changed), and /v1/pm/px serves the Up/Down coins. The 15 s recorded samples and
+     candles are unchanged; while the live feed is fresh the hub shows the live price instead of the slower sample. Display only — trading
+     quotes still come from each venue at order time. */
+  const liveLast = new Map(), liveSent = new Map(); let pxLive = { at: 0, m: {} };
+  const PX_COINS = Object.freeze({ btc: 'BTC', eth: 'ETH', sol: 'SOL', xrp: 'XRP', doge: 'DOGE', bnb: 'BNB', hype: 'HYPE' });
+  if (hlWs) hlWs.onMids((dex, mids, at) => {
+    if (dex === '') { const m = {}; for (const [k, c] of Object.entries(PX_COINS)) { const p = Number(mids[c]); if (p > 0 && Number.isFinite(p)) m[k] = p; } pxLive = { at, m }; }
+    const inRange = (p, r) => !r || (p >= r[0] && p <= r[1]);
+    if (dex === '') for (const m of MARKET_KEYS) { const p = Number(mids[m]); if (p > 0 && Number.isFinite(p) && inRange(p, cfg.priceRange && cfg.priceRange[m])) liveLast.set(m, { price: p, at }); }
+    for (const m of (cfg.view ? cfg.view.markets : [])) { const T = VIEW_MARKET_TABLE[m]; if (!T || T.dex !== dex || !view) continue; const q = view.Q[m]; const coin = q && q.coin || T.venueCoins.find(c => mids[c] != null);
+      const p = coin ? Number(mids[coin]) : NaN; if (p > 0 && Number.isFinite(p) && inRange(p, T.range)) liveLast.set(m, { price: p, at }); }
+  });
+  const liveTimer = hlWs ? setIntervalImpl(() => { const t = now();
+    for (const [m, x] of liveLast) { if (t - x.at > 5000) continue; const s = liveSent.get(m); if (s && s.price === x.price) continue;
+      if (view && view.isViewMarket(m)) { try { if (!view.quality(m, view.Q[m], view.recorder.summary()).ok) continue; } catch { continue; } }
+      liveSent.set(m, { price: x.price, at: x.at }); hub.publishTick({ market: m, price: x.price, observedAt: Math.floor(x.at / 1000) }, { live: true }); metrics.inc('live_ticks'); }
+  }, 1000) : null; if (liveTimer && liveTimer.unref) liveTimer.unref();
+  const liveFor = m => { const x = liveSent.get(m); return x && now() - x.at <= 5000 ? x : null; };
   view = createViewMarkets({ hlWs, cfg, db, readerDb, fetchImpl: viewFetchImpl, now, setTimeoutImpl, clearTimeoutImpl, rand, metrics, log, hub, coreIconFallback: m => icons.get(MARKET_KEYS.map(k => MARKETS[k])).get(MARKETS[m]) || null });
   async function viewSnapshot(m) { const rows = await view.marketsView(); const r = rows.find(x => x.market === m); return r ? { market: m, price: r.price, observedAt: r.observedAt, ageMs: r.ageMs, state: r.state } : null; }
   const engine = createCandleEngine({ store, cfg, now, metrics, onCandle: (m, k) => hub.publishCandle(m, k) });
@@ -130,13 +149,16 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const pmWallet = createPmWalletVerifier({ fetchImpl: viewFetchImpl, rpcUrl: cfg.polygonRpcUrl });
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, pmTrade, isShuttingDown: () => shuttingDown,
+    livePx: () => (now() - pxLive.at <= 5000 ? { at: pxLive.at, prices: pxLive.m, source: 'hyperliquid:allMids' } : null),
     /* r124: one contract for all 11 markets (src/markets.js) */
     /* r128: a Hyperliquid market stops being "view only" ONLY when real-money Hyperliquid execution is fully enabled (code + env) AND the market is in
      * HL_VERIFIED_MARKETS. r132: every row also carries its computed `execution`; toContract() derives `executable` from it (Hyperliquid) or keeps
      * the custody rule (SOL/ETH/BTC, unchanged), so the published flag is the real readiness of the whole path. */
     getMarketsView: async () => { const ex = await executionFor();
       return [...(await marketsView()), ...(await view.marketsView().catch(() => []))].map(r => r && REGISTRY[r.market] ? ex({ ...r, provider: REGISTRY[r.market].provider, venue: REGISTRY[r.market].venue }) : r).map(toContract).filter(Boolean)
-        .map(r => r.provider === 'hyperliquid' && cfg.hl && cfg.hl.enabled && cfg.hl.verifiedMarkets.includes(r.market) ? { ...r, viewOnly: false } : r); },
+        .map(r => r.provider === 'hyperliquid' && cfg.hl && cfg.hl.enabled && cfg.hl.verifiedMarkets.includes(r.market) ? { ...r, viewOnly: false } : r)
+        /* r144.3: a market that has a price gets the live (<= 5 s old) one; a market without a price (unavailable / unverified) stays without */
+        .map(r => { const x = r && r.price != null ? liveFor(r.market) : null; return x ? { ...r, price: x.price, observedAt: Math.floor(x.at / 1000), ageMs: Math.max(0, now() - x.at), state: 'live', livePrice: true } : r; }); },
     view,
     /* PUBLIC: minimal liveness only. Nothing operational, nothing about markets, queues, thresholds or versions. */
     getHealth: async () => {
@@ -181,7 +203,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     leader = true; metrics.inc('leader_acquired');
     for (const m of MARKET_KEYS) { await engine.recover(m); }
     await recorder.start(); log('leader: recorder started');
-    if (hlWs) { hlWs.start(); for (let i = 0; i < 25 && !hlWs.mids(''); i++) await new Promise(r => setTimeoutImpl(r, 200)); }   /* r144: give the socket up to 5 s so the first price is not a REST call */
+    if (hlWs) { hlWs.start(); for (let i = 0; i < 25 && !hlWs.mids(''); i++) await new Promise(r => { const t = setTimeout(r, 200); if (t.unref) t.unref(); }); }   /* real time: this waits for the network, not for the app clock */   /* r144: give the socket up to 5 s so the first price is not a REST call */
     await view.startLeader().catch(e => log('view: start failed', e && e.message));   /* a view-only failure never affects the SOL/ETH/BTC recorder */
   }
 
@@ -223,7 +245,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     timers.forEach(t => clearIntervalImpl(t)); if (initTimer) clearTimeoutImpl(initTimer);
-    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {}); try { hlWs && hlWs.stop(); } catch {}
+    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {}); try { hlWs && hlWs.stop(); } catch {} if (liveTimer) clearIntervalImpl(liveTimer);
     hub.closeAll();
     await new Promise(r => server.close(() => r()));
     await db.close().catch(() => {}); if (readerDb) await readerDb.close().catch(() => {});

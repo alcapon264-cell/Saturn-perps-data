@@ -19,7 +19,7 @@ export function createHlWsFeed({ WebSocketImpl, url = HL_WS_URL, sets = [], now 
   /* sets: [{dex:'', coins:['HYPE',...]}, {dex:'xyz', coins:['xyz:SNDK',...]}] */
   const C = sets.map(s => ({ dex: s.dex || '', coins: [...new Set(s.coins || [])].filter(c => COIN.test(c)), ws: null, open: false, retry: 1000, rt: null, lastMsg: 0,
     mids: null, midsAt: 0, ctx: new Map(), opens: 0, msgs: 0, lastErr: null }));
-  let running = false, hb = null;
+  let running = false, hb = null; const listeners = new Set();
 
   function connect(c) {
     if (!running || c.ws) return;
@@ -47,7 +47,7 @@ export function createHlWsFeed({ WebSocketImpl, url = HL_WS_URL, sets = [], now 
     if (!m || typeof m !== 'object') return;
     if (m.channel === 'allMids' && m.data && m.data.mids && typeof m.data.mids === 'object') {
       const out = {}; for (const [k, v] of Object.entries(m.data.mids)) if ((COIN.test(k) || /^@\d{1,6}$/.test(k)) && typeof v === 'string' && DEC.test(v)) out[qualify(c.dex, k)] = v;
-      c.mids = out; c.midsAt = now(); inc('hl_ws_mids'); return;
+      c.mids = out; c.midsAt = now(); inc('hl_ws_mids'); for (const f of listeners) { try { f(c.dex, out, c.midsAt); } catch {} } return;
     }
     if (m.channel === 'activeAssetCtx' && m.data && typeof m.data.coin === 'string' && m.data.ctx) {
       const k = qualify(c.dex, m.data.coin); if (!c.coins.includes(k)) return; const x = m.data.ctx;
@@ -69,6 +69,8 @@ export function createHlWsFeed({ WebSocketImpl, url = HL_WS_URL, sets = [], now 
     stop() { running = false; if (hb) clearIntervalImpl(hb); hb = null; for (const c of C) { if (c.rt) clearTimeoutImpl(c.rt); c.rt = null; const ws = c.ws; c.ws = null; c.open = false; try { ws && ws.close(); } catch {} } },
     /* mids of one market set, or null; `at` = when the last allMids message arrived */
     mids(dex = '') { const c = C.find(x => x.dex === dex); return c && c.mids ? { mids: c.mids, at: c.midsAt } : null; },
+    /* r144.3: called on every allMids push (dex, mids, at) — used for the 1 s live price ticks */
+    onMids(f) { listeners.add(f); return () => listeners.delete(f); },
     ctx(coin) { for (const c of C) { const v = c.ctx.get(coin); if (v) return v; } return null; },
     stats() { return C.map(c => ({ dex: c.dex || 'main', open: c.open, opens: c.opens, msgs: c.msgs, midsAgeMs: c.midsAt ? now() - c.midsAt : null, ctx: c.ctx.size, lastErr: c.lastErr })); },
     _C: C
