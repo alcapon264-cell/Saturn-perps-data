@@ -31,3 +31,10 @@ if (/^https:\/\/[a-z0-9-]+\.onrender\.com$/i.test(SELF) && process.env.KEEP_AWAK
   setInterval(ping, 10 * 60 * 1000).unref(); setTimeout(ping, 60 * 1000).unref();
   console.log('[saturn-perps-data] keep-awake on: ' + SELF + '/healthz every 10 min');
 }
+
+/* r142 Prediction live self-check: one real Polymarket request 30 s after start and every 6 h. Writes `prediction_selfcheck { ok, events, ... }`
+ * to the log so a deploy can be verified from Render logs. Read-only, no secrets. Set PM_SELFCHECK=0 to turn it off. */
+if (process.env.PM_SELFCHECK !== '0' && app.parts.pm) {
+  const run = () => app.parts.pm.selfCheck().catch(() => {});
+  setTimeout(run, 30 * 1000).unref(); setInterval(run, 6 * 60 * 60 * 1000).unref();
+}
