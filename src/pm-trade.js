@@ -10,7 +10,7 @@
  *     exactly the documented approval set, and read-only relayer status/nonce lookups. Anything else is refused, so Saturn's builder key
  *     cannot be used to move funds. WALLET batches are additionally signed by the user's own wallet and verified on-chain by the deposit wallet.
  *   - Bridge: asks bridge.polymarket.com for the user's personal deposit addresses (funds arrive as pUSD in the user's Polymarket wallet).
- * Routes (prefix /v1/pm/x/): GET config · POST relayer-sign · POST bridge-deposit · GET bridge-assets
+ * Routes (prefix /v1/pm/x/): GET config · POST relayer-sign · POST bridge-deposit · GET bridge-assets · GET bridge-status?address=
  * Trading is OFF unless PM_TRADING_ENABLED=1 AND all three builder credentials are set. */
 import { createHmac } from 'node:crypto';
 
@@ -126,7 +126,7 @@ export function createPmTrade({ env = process.env, fetchImpl = globalThis.fetch,
         if (req.method !== 'GET') return [405, { ok: false, error: 'method_not_allowed' }];
         return [200, { ok: true, trading: { enabled, reason, builderCode: C.builderCode, chainId: PMX.chainId, clob: PMX.clob, relayer: PMX.relayer, contracts: { factory: PMX.factory, pUSD: PMX.pUSD, ctf: PMX.ctf, positionManager: PMX.positionManager, v2Exchange: PMX.v2Exchange, standardExchange: PMX.standardExchange, negRiskExchange: PMX.negRiskExchange, negRiskAdapter: PMX.negRiskAdapter } } }];
       }
-      if (req.method !== 'POST' && path !== '/v1/pm/x/bridge-assets') return [405, { ok: false, error: 'method_not_allowed' }];
+      if (req.method !== 'POST' && path !== '/v1/pm/x/bridge-assets' && path !== '/v1/pm/x/bridge-status') return [405, { ok: false, error: 'method_not_allowed' }];
       if (path === '/v1/pm/x/relayer-sign') {
         if (!enabled) return [503, { ok: false, error: 'trading_disabled', reason }];
         if (limiter && limiter(ip + '|pmx-sign', 40)) return [429, { ok: false, error: 'rate_limited' }];
@@ -155,6 +155,20 @@ export function createPmTrade({ env = process.env, fetchImpl = globalThis.fetch,
         if (limiter && limiter(ip + '|pmx-assets', 30)) return [429, { ok: false, error: 'rate_limited' }];
         if (!assetsCache.v || now() - assetsCache.at > 600000) { assetsCache.v = await upstream(PMX.bridge + '/supported-assets', { method: 'GET', headers: { accept: 'application/json' } }); assetsCache.at = now(); }
         return [200, { ok: true, assets: assetsCache.v, source: 'polymarket:bridge/supported-assets' }];
+      }
+      if (path === '/v1/pm/x/bridge-status') {
+        /* r143.2: read-only progress of a deposit sent to a bridge address (Polymarket: GET /status/{address}; poll every 10-30 s) */
+        if (req.method !== 'GET') return [405, { ok: false, error: 'method_not_allowed' }];
+        if (limiter && limiter(ip + '|pmx-bstatus', 60)) return [429, { ok: false, error: 'rate_limited' }];
+        const a = String(q.get('address') || '');
+        if (!(ADDR.test(a) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a))) return [400, { ok: false, error: 'bad_address' }];
+        const v = await upstream(PMX.bridge + '/status/' + encodeURIComponent(a) + '?limit=20', { method: 'GET', headers: { accept: 'application/json' } });
+        const ST = new Set(['DEPOSIT_DETECTED', 'PROCESSING', 'ORIGIN_TX_CONFIRMED', 'SUBMITTED', 'COMPLETED', 'FAILED']);
+        const txs = (v && Array.isArray(v.transactions) ? v.transactions : []).slice(0, 20).map(t => ({
+          status: ST.has(t && t.status) ? t.status : 'UNKNOWN', fromChainId: String(t && t.fromChainId || '').slice(0, 30), fromTokenAddress: String(t && t.fromTokenAddress || '').slice(0, 64),
+          fromAmountBaseUnit: /^[0-9]{1,40}$/.test(String(t && t.fromAmountBaseUnit)) ? String(t.fromAmountBaseUnit) : null, toTokenAddress: String(t && t.toTokenAddress || '').slice(0, 64),
+          txHash: typeof (t && t.txHash) === 'string' && /^[0-9A-Za-z]{20,100}$/.test(t.txHash) ? t.txHash : null, createdTimeMs: Number.isFinite(Number(t && t.createdTimeMs)) ? Number(t.createdTimeMs) : null }));
+        return [200, { ok: true, address: a, transactions: txs }];
       }
       return [404, { ok: false, error: 'not_found' }];
     } catch (e) {
