@@ -22,13 +22,20 @@ test('isolation: the existing Saturn WebSocket constant and hosts never appear i
 
 test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere', () => {
   const callers = Object.entries(prod).filter(([f, t]) => /\bfetch\s*\(|fetchImpl\s*\(|https?\.request|net\.connect|axios/.test(t) && !/live-check/.test(f)).map(([f]) => f);
-  assert.deepEqual(callers.sort(), ['server.js', 'src/hl-exec.js', 'src/jupiter.js', 'src/pm-data.js', 'src/pyth.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay) + r133 keep-awake');
+  assert.deepEqual(callers.sort(), ['server.js', 'src/hl-exec.js', 'src/jupiter.js', 'src/pm-data.js', 'src/pm-trade.js', 'src/pm-wallet.js', 'src/pyth.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay) + r133 keep-awake');
   /* r135: the Pyth client is GET-only to one fixed read-only path */
   const py = prod['src/pyth.js']; assert.match(py, /export const PYTH_BASE = 'https:\/\/benchmarks\.pyth\.network\/v1\/shims\/tradingview\/history';/); assert.deepEqual([...py.matchAll(/fetchImpl\(([^,]+),/g)].map(m => m[1].trim()), ['url']); assert.match(py, /method: 'GET'/); assert.ok(!/'POST'|signL1|signDigest|privateKey/i.test(py.replace(/\/\*[\s\S]*?\*\//g, '')));
   /* r137: Prediction data is read-only: GET to Polymarket's three public API hosts only, no keys, no signing, no order routes */
   const pmd = prod['src/pm-data.js']; assert.match(pmd, /const GAMMA = 'https:\/\/gamma-api\.polymarket\.com', CLOB = 'https:\/\/clob\.polymarket\.com', DATA = 'https:\/\/data-api\.polymarket\.com';/);
   assert.match(pmd, /method: 'GET'/); const pmCode = pmd.replace(/\/\*[\s\S]*?\*\//g, '');
   assert.ok(!/'POST'|\/order|privateKey|signTyped|POLY_API_KEY|builder_secret|BUILDER_/i.test(pmCode), 'no trading in the read-only Prediction module');
+  /* r143: Prediction trading support never trades: its only outbound calls are Polymarket's bridge (deposit addresses, supported assets).
+   * No CLOB, no relayer submission, no order/cancel/transfer code: orders are signed and sent by the user's browser. */
+  const pt = prod['src/pm-trade.js'], ptCode = pt.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.deepEqual([...ptCode.matchAll(/await upstream\(([^,]+),/g)].map(m => m[1].trim()).sort(), ["PMX.bridge + '/deposit'", "PMX.bridge + '/supported-assets'"]);
+  assert.deepEqual([...ptCode.matchAll(/fetchImpl\(([^,]+),/g)].map(m => m[1].trim()), ['url']);
+  assert.ok(!/\/order|cancel|transfer|withdraw|privateKey|signTyped|eth_send/i.test(ptCode), 'no trading or fund movement in pm-trade.js');
+  assert.ok(ptCode.indexOf("if (!enabled) return [503") < ptCode.indexOf('await readBody(req)'), 'the trading switch is checked before the builder-signing body is read');
   /* r133: server.js only ever calls its OWN public /healthz (Render's onrender.com URL), nothing else */
   const sv = prod['server.js'];
   assert.deepEqual([...sv.matchAll(/fetch\(([^,]+),/g)].map(m => m[1].trim()), ["SELF + '/healthz'"]);
@@ -57,7 +64,10 @@ test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the
   assert.match(j, /if \(!Object\.values\(GATEWAY_PATHS\)\.includes\(path\)\) throw/);
   const tk = j.slice(j.indexOf('export function createTokenIcons')); assert.match(tk, /base \+ '\/search\?query='/); assert.match(tk, /method: 'GET'/); assert.ok(!/method: '(POST|PUT|PATCH|DELETE)'/.test(tk), 'r120 token-icon client is GET-only, fixed path');
   for (const [f, t] of Object.entries(prod)) {
-    const code = t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const code = t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+      /* r143 read-only exceptions, exact strings only: Data API positions lookup (pm-data.js) and Polymarket bridge deposit ADDRESSES (pm-trade.js) */
+      .replace(f === 'src/pm-data.js' ? /'\/v2\/positions\?user=' |path === '\/v1\/pm\/positions'/g : /^\b$/, '')
+      .replace(f === 'src/pm-trade.js' ? /PMX\.bridge \+ '\/deposit'|path === '\/v1\/pm\/x\/bridge-deposit'|\/v1\/pm\/x\/bridge-deposit/g : /^\b$/, '');
     if (!['src/jupiter.js', 'src/gateway.js', 'src/perps-program.js'].includes(f) && !/live-check/.test(f)) assert.ok(!/\/(orders?|positions?|trades?|swap|increase|decrease|close|limit|deposit|withdraw|transfer)\b/i.test(code), f + ' references a trading endpoint outside the gateway');
     if (f === 'src/vendor/hlsign.mjs') continue;   /* r128 vendored audited crypto (pinned by hash below); the relay uses it only to RECOVER signers */
     assert.ok(!/signTransaction|sendTransaction|Keypair|privateKey|secretKey|mnemonic|wallet\.sign|@solana\/web3|createPrivateKey|crypto\.sign\(|\bsign\(/i.test(code), f + ' touches wallet/signing');
@@ -67,11 +77,12 @@ test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the
 
 test('HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bodies (behind the execution switch); no eval/child_process/dynamic require', () => {
   const h = prod['src/http.js']; assert.ok(!/req\.on\(['"]data/.test(h) && !/JSON\.parse\(.*body/i.test(h), 'http.js never reads request bodies');
-  for (const [f, t] of Object.entries(prod)) if (f !== 'src/gateway.js' && f !== 'src/hl-exec.js') assert.ok(!/req\.on\(['"]data/.test(t), f + ' reads a request body; only the gateways may');
+  for (const [f, t] of Object.entries(prod)) if (f !== 'src/gateway.js' && f !== 'src/hl-exec.js' && f !== 'src/pm-trade.js') assert.ok(!/req\.on\(['"]data/.test(t), f + ' reads a request body; only the gateways may');
   { const hx = prod['src/hl-exec.js']; const ex = hx.slice(hx.indexOf('async function exchange(')); assert.ok(ex.indexOf('if (!C.enabled)') > 0 && ex.indexOf('if (!C.enabled)') < ex.indexOf('await readBody(req)'), 'r128 relay: the execution switch is checked before any body is read'); assert.match(hx, /C\.maxBody/); }
+  assert.match(prod['src/pm-trade.js'], /maxBody = 16 \* 1024/, 'r143: builder-signing bodies are size-capped');
   const g = prod['src/gateway.js']; assert.match(g, /if \(!G\.executionEnabled\)/, 'transaction routes are behind the execution switch'); assert.match(g, /G\.maxBody/);
   for (const [f, t] of Object.entries(prod)) { if (/live-check/.test(f)) continue; assert.ok(!/\beval\s*\(|new Function|child_process|require\(\s*[^'"]|import\(\s*[^'"]/.test(t) || f === 'server.js', f); }
-  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets']);
+  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets', '/v1/pm/wallet/status']);   /* r141 read-only Polygon verifier (GET only, checked below) */
 });
 
 test('secrets: no keys, tokens, URLs with credentials or private hosts hard-coded; .env is ignored', () => {
