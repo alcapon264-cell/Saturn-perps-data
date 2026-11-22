@@ -109,3 +109,30 @@ test('tok-live r162: Pulse clients get every trade (signature, wallet, amounts) 
     pulse.close(); disc.close(); assert.equal(T.stats().wallets, 0);
   } finally { T.stop(); await pa.close(); }
 });
+
+test('tok-live r163: big buys on ANY token reach Pulse clients that asked (bigMin), replayed on subscribe, plus last prices', async () => {
+  const pa = await upstream();
+  const T = createTokLive({ WebSocketImpl: WebSocket, upstreams: ['pumpapi'], urls: { pumpapi: pa.url }, coalesceMs: 40, statsMs: 3600000 });
+  T.start();
+  try {
+    const SIG = n => (A.repeat(2).slice(0, 87) + A[n]);
+    const watcher = browser(); T.attach(watcher); watcher.msg({ type: 'sub', mints: [M1] });       /* keeps the upstream open */
+    assert.ok(await until(() => pa.conns.length === 1));
+    pa.send({ mint: M2, action: 'buy', price: 1e-6, quoteAmount: 2.5, tokenAmount: 2500000, signature: SIG(1), txSigner: mint('Whale'), name: 'Big<b>Coin', symbol: 'BIG' });
+    pa.send({ mint: M3, action: 'buy', price: 1e-6, quoteAmount: 0.1, tokenAmount: 100000, signature: SIG(2), txSigner: mint('Small') });
+    pa.send({ mint: M3, action: 'sell', price: 1e-6, quoteAmount: 9, tokenAmount: 100000, signature: SIG(3), txSigner: mint('Seller') });
+    await wait(150);
+    const pulse = browser(); T.attach(pulse); pulse.msg({ type: 'sub', mints: [M2], trades: true, bigMin: 1 });
+    assert.ok(await until(() => pulse.out.some(x => x.type === 'trade')));
+    const rep = pulse.out.filter(x => x.type === 'trade');
+    assert.deepEqual(rep.map(x => [x.mint, x.side, x.sol, x.big, x.recent, x.name, x.symbol]), [[M2, 'buy', 2.5, true, true, 'BigbCoin', 'BIG']], 'only the big BUY is replayed (not the small buy, not the sell); text is cleaned');
+    assert.ok(pulse.out.some(x => x.type === 'tok' && x.mint === M2 && x.src === 'last'), 'last known price of a newly watched token is sent at once');
+    pulse.out.length = 0;
+    pa.send({ mint: mint('Fresh'), action: 'buy', price: 2e-6, quoteAmount: 1.2, tokenAmount: 600000, signature: SIG(4), txSigner: mint('Buyer') });
+    pa.send({ mint: mint('Fresh'), action: 'buy', price: 2e-6, quoteAmount: 0.7, tokenAmount: 350000, signature: SIG(5), txSigner: mint('Buyer') });
+    assert.ok(await until(() => pulse.out.some(x => x.type === 'trade')));
+    await wait(100);
+    assert.deepEqual(pulse.out.filter(x => x.type === 'trade').map(x => x.sol), [1.2], 'live: only buys >= the client\'s bigMin (1 SOL), on a token nobody watches');
+    assert.equal(watcher.out.filter(x => x.type === 'trade').length, 0);
+  } finally { T.stop(); await pa.close(); }
+});
