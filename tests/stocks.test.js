@@ -1,35 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pickStocks, createStocks } from '../src/stocks.js';
-const real = (sym, id, extra = {}) => ({ id, symbol: sym, name: sym.replace(/x$/, '') + ' xStock', isVerified: true, usdPrice: 100, liquidity: 5000, icon: 'https://xstocks-metadata.backed.fi/logos/' + sym + '.png', stats24h: { priceChange: 1.5 }, ...extra });
-test('pickStocks keeps only verified Xs-mint xStocks, best liquidity per ticker, in list order', () => {
-  const arr = [
-    real('AAPLx', 'XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp', { name: 'Apple xStock', usdPrice: 350.9, stats24h: { priceChange: -0.57 } }),
-    { ...real('AAPLx', '2qAq8FC9B2yHQv4u58ozKpm6oVBA4iGV3c61NVkpnnKA'), name: 'Apple xStock' },          /* look-alike: not an Xs mint */
-    { ...real('AAPLx', 'XsFakeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1'), isVerified: false },               /* not verified */
-    real('NVDAx', 'Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh', { name: 'NVIDIA xStock', liquidity: 10 }),
-    real('NVDAx', 'XsNVDAbetterLiquidityAAAAAAAAAAAAAAAAAAAAAA', { name: 'NVIDIA xStock', liquidity: 99999 }),
-    real('SPYx', 'XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W', { name: 'SP500 xStock' }),
-    real('ZZZx', 'XsZZZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),                                         /* not on Saturn's list */
-    real('MSFTx', 'XsMSFTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', { usdPrice: 0 }),                         /* no price -> left out */
-    real('TSLAx', 'XsTSLAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', { icon: 'javascript:alert(1)' })
-  ];
-  const r = pickStocks(arr);
-  assert.deepEqual(r.map(x => x.ticker), ['NVDA', 'AAPL', 'TSLA', 'SPY']);
-  const a = r.find(x => x.ticker === 'AAPL');
-  assert.equal(a.mint, 'XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp'); assert.equal(a.name, 'Apple'); assert.equal(a.price, 350.9); assert.equal(a.chg24, -0.57); assert.equal(a.kind, 'equity');
-  assert.equal(r.find(x => x.ticker === 'NVDA').mint, 'XsNVDAbetterLiquidityAAAAAAAAAAAAAAAAAAAAAA');
-  assert.equal(r.find(x => x.ticker === 'SPY').kind, 'etf');
-  assert.equal(r.find(x => x.ticker === 'TSLA').icon, null);
+import { pickFromSearch, pricesFrom, createStocks, SEED } from '../src/stocks.js';
+const AAPL = SEED.AAPL, NV = 'Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh', FAKE = '2qAq8FC9B2yHQv4u58ozKpm6oVBA4iGV3c61NVkpnnKA';
+test('pickFromSearch keeps only Xs mints named "<T>x … xStock", deepest pool', () => {
+  const j = { pairs: [
+    { chainId: 'solana', baseToken: { address: FAKE, symbol: 'AAPLx', name: 'Apple xStock' }, liquidity: { usd: 9e9 } },
+    { chainId: 'solana', baseToken: { address: AAPL, symbol: 'AAPLx', name: 'Apple xStock' }, liquidity: { usd: 5000 } },
+    { chainId: 'solana', quoteToken: { address: AAPL, symbol: 'AAPLx', name: 'Apple xStock' }, baseToken: { address: 'So11111111111111111111111111111111111111112', symbol: 'SOL', name: 'Wrapped SOL' }, liquidity: { usd: 9000 } },
+    { chainId: 'ethereum', baseToken: { address: 'XsEthAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', symbol: 'AAPLx', name: 'Apple xStock' }, liquidity: { usd: 1e9 } }] };
+  assert.deepEqual(pickFromSearch(j, 'AAPL'), { mint: AAPL, name: 'Apple', liq: 9000 });
+  assert.equal(pickFromSearch(j, 'MSFT'), null);
 });
-test('createStocks: one GET to Jupiter with the server key, cached, last good list kept on failure', async () => {
-  let calls = 0, fail = false, t = 1000;
-  const fetchImpl = async (url, o) => { calls++; assert.match(url, /^https:\/\/api\.jup\.ag\/tokens\/v2\/search\?query=NVDAx%2CAAPLx/); assert.equal(o.headers['x-api-key'], 'k');
-    if (fail) return { ok: false, status: 500, text: async () => '' };
-    return { ok: true, text: async () => JSON.stringify([{ id: 'XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp', symbol: 'AAPLx', name: 'Apple xStock', isVerified: true, usdPrice: 300, stats24h: { priceChange: 1 } }]) }; };
-  const S = createStocks({ fetchImpl, keyHeader: 'x-api-key', key: 'k', now: () => t });
-  const a = await S.get(); assert.equal(a.ok, true); assert.equal(a.stocks[0].ticker, 'AAPL'); assert.equal(calls, 1);
-  await S.get(); assert.equal(calls, 1, 'cached');
-  t += 25000; fail = true; const b = await S.get(); assert.equal(b.ok, true); assert.equal(b.stocks[0].price, 300);
-  await new Promise(r => setTimeout(r, 10)); assert.equal(calls, 2);
+test('pricesFrom: deepest pool, base token only, https images only', () => {
+  const m = pricesFrom([
+    { chainId: 'solana', baseToken: { address: AAPL }, priceUsd: '250.1', priceChange: { h24: -1.2 }, liquidity: { usd: 100 }, info: { imageUrl: 'https://cdn.dexscreener.com/a.png' } },
+    { chainId: 'solana', baseToken: { address: AAPL }, priceUsd: '251.5', priceChange: { h24: -1.0 }, liquidity: { usd: 900 }, info: { imageUrl: 'javascript:x' } },
+    { chainId: 'solana', baseToken: { address: FAKE }, priceUsd: '1', liquidity: { usd: 1e9 } }]);
+  assert.equal(m.size, 1); assert.deepEqual({ ...m.get(AAPL), vol24: undefined }, { price: 251.5, chg24: -1.0, icon: null, liq: 900, vol24: undefined });
+});
+test('createStocks: discovery verifies with ONE Jupiter call, prices from DexScreener, unverified look-alikes dropped, live socket pushes changes', async () => {
+  const calls = []; let price = 178;
+  const fetchImpl = async url => { calls.push(url); const ok = b => ({ ok: true, text: async () => JSON.stringify(b) });
+    if (url.includes('/latest/dex/search?q=NVDAx')) return ok({ pairs: [{ chainId: 'solana', baseToken: { address: NV, symbol: 'NVDAx', name: 'NVIDIA xStock' }, liquidity: { usd: 1 } }] });
+    if (url.includes('/latest/dex/search?q=MSFTx')) return ok({ pairs: [{ chainId: 'solana', baseToken: { address: 'XsUnverifiedAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', symbol: 'MSFTx', name: 'Microsoft xStock' }, liquidity: { usd: 1 } }] });
+    if (url.includes('/latest/dex/search')) return ok({ pairs: [] });
+    if (url.startsWith('https://api.jup.ag/tokens/v2/search')) return ok([{ id: NV, isVerified: true }, { id: 'XsUnverifiedAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', isVerified: false }]);
+    if (url.startsWith('https://api.dexscreener.com/tokens/v1/solana/')) return ok(url.split('/solana/')[1].split(',').map(m => ({ chainId: 'solana', baseToken: { address: m }, priceUsd: String(m === NV ? price : 300), priceChange: { h24: 1 }, liquidity: { usd: 10 } })));
+    return { ok: false, status: 404, text: async () => '' }; };
+  const fast = fn => setTimeout(fn, 0);
+  const S = createStocks({ fetchImpl, keyHeader: 'x-api-key', key: 'k', setTimeoutImpl: (fn, ms) => setTimeout(fn, Math.min(ms, 1)), livePriceMs: 20 });
+  await S._discover();
+  assert.equal(calls.filter(u => u.startsWith('https://api.jup.ag/')).length, 1, 'one Jupiter call');
+  const r = await S.get(); assert.equal(r.ok, true);
+  assert.deepEqual(r.stocks.map(x => x.ticker), ['NVDA', 'AAPL', 'GOOGL', 'SPY']);
+  assert.equal(r.stocks[0].price, 178); assert.equal(r.stocks[0].name, 'NVIDIA');
+  const sent = []; const ws = { readyState: 1, bufferedAmount: 0, send: m => sent.push(JSON.parse(m)), on: () => {}, close: () => {} };
+  S.attach(ws); await new Promise(r => setTimeout(r, 30)); assert.equal(sent[0].type, 'snap');
+  price = 180; await new Promise(r => setTimeout(r, 80));
+  const px = sent.find(m => m.type === 'px'); assert.ok(px); assert.deepEqual(px.rows.map(x => [x.mint, x.price]), [[NV, 180]]);
+  S.stop(); void fast;
 });

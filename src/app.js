@@ -151,7 +151,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log, tradingState: pmTrade });   /* r137 Prediction data */
   const pmWallet = createPmWalletVerifier({ fetchImpl: viewFetchImpl, rpcUrl: cfg.polygonRpcUrl });
   const tokLiveRef = { v: null };
-  const stocks = createStocks({ fetchImpl: iconFetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, log });
+  const stocks = createStocks({ fetchImpl: iconFetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, log, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl });
   const tokMeta = createTokMeta({ fetchImpl: viewFetchImpl, now, tok: () => tokLiveRef.v });
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, pmTrade, isShuttingDown: () => shuttingDown,
@@ -195,17 +195,19 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     upstreams: String(process.env.TOK_LIVE_UPSTREAMS || 'pumpapi').split(',').map(x => x.trim()), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics, record: process.env.TOK_RECORD !== '0' }) : null;
   tokLiveRef.v = tokLive;
   const tokWss = tokLive ? new WebSocketServer({ noServer: true, maxPayload: 4096 }) : null;
+  const stkWss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   const ipConns = new Map();
   server.on('upgrade', (req, socket, head) => {
     socket.on('error', () => {});   /* a reset during the handshake must not surface as an uncaught 'error' event */
     const ip = clientIp(req, cfg.http.trustedProxyHops), o = req.headers.origin;
     const tok = req.url === '/tokens/live' && !!tokWss;
-    const bad = (req.url !== '/perps/live' && !tok) || (o && !cfg.allowedOrigins.has(o)) || shuttingDown || (ipConns.get(ip) || 0) >= cfg.ws.maxConnPerIp || limiter(ip + '|ws-upgrade', 30);
+    const stk = req.url === '/stocks/live';
+    const bad = (req.url !== '/perps/live' && !tok && !stk) || (o && !cfg.allowedOrigins.has(o)) || shuttingDown || (ipConns.get(ip) || 0) >= cfg.ws.maxConnPerIp || limiter(ip + '|ws-upgrade', 30);
     if (bad) { metrics.inc('ws_upgrade_refused'); socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); socket.destroy(); return; }
-    (tok ? tokWss : wss).handleUpgrade(req, socket, head, c => {
+    (stk ? stkWss : tok ? tokWss : wss).handleUpgrade(req, socket, head, c => {
       ipConns.set(ip, (ipConns.get(ip) || 0) + 1);
       c.on('close', () => { const n = (ipConns.get(ip) || 1) - 1; n ? ipConns.set(ip, n) : ipConns.delete(ip); });
-      if (tok) tokLive.attach(c, { ip }); else hub.attach(c, { ip });
+      if (stk) stocks.attach(c); else if (tok) tokLive.attach(c, { ip }); else hub.attach(c, { ip });
     });
   });
 
@@ -266,7 +268,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   async function shutdown() {
     if (shuttingDown) return; shuttingDown = true;
     timers.forEach(t => clearIntervalImpl(t)); if (initTimer) clearTimeoutImpl(initTimer);
-    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {}); try { hlWs && hlWs.stop(); } catch {} try { tokLive && tokLive.stop(); } catch {} if (liveTimer) clearIntervalImpl(liveTimer);
+    await recorder.stop().catch(() => {}); await view.stopLeader().catch(() => {}); try { hlWs && hlWs.stop(); } catch {} try { tokLive && tokLive.stop(); } catch {} try { stocks.stop(); } catch {} if (liveTimer) clearIntervalImpl(liveTimer);
     hub.closeAll();
     await new Promise(r => server.close(() => r()));
     await db.close().catch(() => {}); if (readerDb) await readerDb.close().catch(() => {});
