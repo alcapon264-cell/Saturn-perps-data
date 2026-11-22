@@ -22,7 +22,11 @@ test('tok-live record: every stream trade is kept per wallet with token names, e
   const pa = await upstream();
   const T = createTokLive({ WebSocketImpl: WebSocket, urls: { pumpapi: pa.url }, upstreams: ['pumpapi'], statsMs: 3600000, record: true, recPerWallet: 3, recWallets: 2 });
   T.start(); T._beat();
-  assert.ok(await until(() => pa.conns.length === 1), 'recording keeps the upstream open without any browser');
+  /* r171d: recording rides along while the stream is open for someone; it no longer keeps the stream open by itself (CPU) */
+  await wait(300); assert.equal(pa.conns.length, 0, 'no browser -> no upstream');
+  const cs = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await new Promise(r => cs.on('listening', r)); cs.on('connection', ws => T.attach(ws, {}));
+  const cl = new WebSocket('ws://127.0.0.1:' + cs.address().port); await new Promise(r => cl.on('open', r)); cl.send(JSON.stringify({ type: 'sub', mints: [], wallets: [], trades: true, bigMin: 5 }));
+  T._beat(); assert.ok(await until(() => pa.conns.length === 1), 'a Pulse browser opens the upstream');
   pa.send({ mint: M1, action: 'buy', txSigner: W1, signature: SIG('a'), quoteAmount: 1.5, baseAmount: 1e6, price: 1.5e-6, timestamp: 1700000000, name: 'Snow Coin', symbol: 'SNOW', uri: 'https://ipfs.io/ipfs/abc' });
   pa.send({ mint: M2, action: 'sell', txSigner: W1, signature: SIG('b'), quoteAmount: 0.4, baseAmount: 2e5, price: 2e-6, timestamp: 1700000100 });
   pa.send({ mint: M2, action: 'sell', txSigner: W1, signature: SIG('b'), quoteAmount: 0.4, baseAmount: 2e5, price: 2e-6, timestamp: 1700000100 });   /* duplicate */
@@ -39,7 +43,7 @@ test('tok-live record: every stream trade is kept per wallet with token names, e
   pa.send({ mint: M1, action: 'buy', txSigner: id('Wallc'), signature: SIG('y'), quoteAmount: 1, baseAmount: 1, price: 1 });
   pa.send({ mint: M1, action: 'buy', txSigner: id('Walld'), signature: SIG('z'), quoteAmount: 1, baseAmount: 1, price: 1 });
   assert.ok(await until(() => T.stats().recWallets === 2 && T.walletTrades(W1).length === 0), 'oldest wallets dropped beyond the cap');
-  T.stop(); await pa.close();
+  T.stop(); cl.close(); cs.close(); await pa.close();
 });
 
 test('tok-meta: picture from the metadata uri, Pump.fun fallback, unsafe hosts refused, cached', async () => {

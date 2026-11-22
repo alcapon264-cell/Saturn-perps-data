@@ -149,7 +149,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
         try { ws.send(JSON.stringify({ type: 'tok', ...x })); c.sent++; sent++; } catch {} }
     }
   }
-  const watching = () => record || ref.size > 0 || wref.size > 0 || [...clients.values()].some(c => c.bigMin > 0);
+  const watching = () => ref.size > 0 || wref.size > 0 || [...clients.values()].some(c => c.bigMin > 0);
   function reconcile() {
     for (const u of U) { if (watching()) { if (!u.ws && !u.rt) connect(u); else if (u.kind === 'pumpportal') syncPortal(u); } }
     /* nobody watching for a while -> upstreams close (they reopen on the next subscription) */
