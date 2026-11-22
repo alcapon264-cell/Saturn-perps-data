@@ -10,14 +10,14 @@ import { migrate } from '../../src/db.js';
 export const MIG = ['001_init.sql', '002_exec_idempotency.sql', '003_view_only_markets.sql', '004_hl_exec_audit.sql', '005_hl_funding.sql', '006_saturn_fee.sql'].map(name => ({ name, sql: readFileSync(new URL('../../migrations/' + name, import.meta.url), 'utf8') }));
 export const START = Date.UTC(2026, 10, 16, 0, 0, 0);      /* aligned to every timeframe */
 
-export async function makeEnv({ taps = {}, env = {}, cfgOverrides = {}, prices, start = START, db = null, clock = null, jup = null, init = true } = {}) {
+export async function makeEnv({ taps = {}, env = {}, cfgOverrides = {}, prices, start = START, db = null, clock = null, jup = null, init = true, extra = {} } = {}) {
   db = db || await createTestDb(); if (!db) return null;
   clock = clock || new FakeClock(start);
   const cfg = { ...loadConfig({ DATABASE_URL: 'postgres://secret-user:secret-pass@db.internal/saturn', ALLOWED_ORIGINS: 'https://app.example', VIEW_MARKETS: 'off', ...env }   /* r125: view markets are ON by default in production; the SOL/ETH/BTC tests opt out explicitly, view tests opt in */), ...cfgOverrides };
   jup = jup || fakeJupiter({ prices: prices || { [MARKETS.SOL]: 150, [MARKETS.ETH]: 3000, [MARKETS.BTC]: 90000 } });
   jup.clock = clock;
   const logs = [];
-  const app = createApp({ cfg, db, fetchImpl: jup.fetch, WebSocketServer, migrationFiles: MIG, now: clock.now, setTimeoutImpl: clock.setTimeout, clearTimeoutImpl: clock.clearTimeout, setIntervalImpl: clock.setInterval, clearIntervalImpl: clock.clearInterval, rand: () => 0.5, taps, log: (...a) => logs.push(a.join(' ')) });
+  const app = createApp({ cfg, db, fetchImpl: jup.fetch, WebSocketServer, migrationFiles: MIG, now: clock.now, setTimeoutImpl: clock.setTimeout, clearTimeoutImpl: clock.clearTimeout, setIntervalImpl: clock.setInterval, clearIntervalImpl: clock.clearInterval, rand: () => 0.5, taps, log: (...a) => logs.push(a.join(' ')) , ...extra });
   clock.idleFn = () => app.idle();
   if (init) await app.init();
   return { db, clock, cfg, jup, app, logs, parts: app.parts,
