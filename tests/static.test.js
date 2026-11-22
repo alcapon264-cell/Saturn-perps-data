@@ -22,7 +22,11 @@ test('isolation: the existing Saturn WebSocket constant and hosts never appear i
 
 test('outbound: only src/jupiter.js performs HTTP; the recorder is GET-only; the gateway client has a fixed path allow-list; no signing anywhere', () => {
   const callers = Object.entries(prod).filter(([f, t]) => /\bfetch\s*\(|fetchImpl\s*\(|https?\.request|net\.connect|axios/.test(t) && !/live-check/.test(f)).map(([f]) => f);
-  assert.deepEqual(callers.sort(), ['server.js', 'src/hl-exec.js', 'src/jupiter.js', 'src/pm-data.js', 'src/pm-trade.js', 'src/pm-wallet.js', 'src/pyth.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay) + r133 keep-awake');
+  assert.deepEqual(callers.sort(), ['server.js', 'src/hl-exec.js', 'src/jupiter.js', 'src/pm-data.js', 'src/pm-trade.js', 'src/pm-wallet.js', 'src/pyth.js', 'src/tok-meta.js', 'src/viewsources.js'], 'outbound HTTP lives in exactly three modules (r120 view sources, r128 Hyperliquid relay) + r133 keep-awake');
+  /* r166: token pictures are read-only GETs: https only, public host names only (no IPs/localhost), 4 s timeout, 64 KB cap, one fixed Pump.fun coin path */
+  { const tm = prod['src/tok-meta.js'], tmc = tm.replace(/\/\*[\s\S]*?\*\//g, ''); assert.match(tm, /const PUMP_COIN = 'https:\/\/frontend-api-v3\.pump\.fun\/coins\/';/);
+    assert.deepEqual([...tmc.matchAll(/fetchImpl\(([^,]+),/g)].map(m => m[1].trim()), ['u.href']); assert.match(tmc, /u\.protocol !== 'https:' \|\| !okHost\(u\.hostname\)/); assert.match(tmc, /65536/);
+    assert.ok(!/'POST'|method:|privateKey|\bsign\w*\(/i.test(tmc)); }
   /* r135: the Pyth client is GET-only to one fixed read-only path */
   const py = prod['src/pyth.js']; assert.match(py, /export const PYTH_BASE = 'https:\/\/benchmarks\.pyth\.network\/v1\/shims\/tradingview\/history';/); assert.deepEqual([...py.matchAll(/fetchImpl\(([^,]+),/g)].map(m => m[1].trim()), ['url']); assert.match(py, /method: 'GET'/); assert.ok(!/'POST'|signL1|signDigest|privateKey/i.test(py.replace(/\/\*[\s\S]*?\*\//g, '')));
   /* r137: Prediction data is read-only: GET to Polymarket's three public API hosts only, no keys, no signing, no order routes */
@@ -82,7 +86,7 @@ test('HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bod
   assert.match(prod['src/pm-trade.js'], /maxBody = 16 \* 1024/, 'r143: builder-signing bodies are size-capped');
   const g = prod['src/gateway.js']; assert.match(g, /if \(!G\.executionEnabled\)/, 'transaction routes are behind the execution switch'); assert.match(g, /G\.maxBody/);
   for (const [f, t] of Object.entries(prod)) { if (/live-check/.test(f)) continue; assert.ok(!/\beval\s*\(|new Function|child_process|require\(\s*[^'"]|import\(\s*[^'"]/.test(t) || f === 'server.js', f); }
-  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets', '/v1/pm/px', '/v1/pm/wallet/status']);   /* r144.3 live coin prices (GET, no body) */   /* r141 read-only Polygon verifier (GET only, checked below) */
+  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets', '/v1/pm/px', '/v1/pm/wallet/status', '/v1/tok/meta', '/v1/tok/trader']);   /* r144.3 live coin prices (GET, no body) */   /* r141 read-only Polygon verifier (GET only, checked below) */
 });
 
 test('secrets: no keys, tokens, URLs with credentials or private hosts hard-coded; .env is ignored', () => {

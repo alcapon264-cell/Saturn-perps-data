@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { MARKET_KEYS, MARKETS, MARKET_META, SOURCE, VIEW_SOURCE, VIEW_MARKET_TABLE } from './config.js';
 import { createHlWsFeed } from './hl-ws.js';
 import { createTokLive } from './tok-live.js';
+import { createTokMeta } from './tok-meta.js';
 import { createMetrics } from './metrics.js';
 import { createLimiter, clientIp } from './limits.js';
 import { createStore } from './store.js';
@@ -148,6 +149,8 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const pmTrade = createPmTrade({ env: cfg.pmEnv || process.env, fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log });   /* r143 Prediction trading support (no orders server-side) */
   const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log, tradingState: pmTrade });   /* r137 Prediction data */
   const pmWallet = createPmWalletVerifier({ fetchImpl: viewFetchImpl, rpcUrl: cfg.polygonRpcUrl });
+  const tokLiveRef = { v: null };
+  const tokMeta = createTokMeta({ fetchImpl: viewFetchImpl, now, tok: () => tokLiveRef.v });
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, pmTrade, isShuttingDown: () => shuttingDown,
     livePx: () => (now() - pxLive.at <= 5000 ? { at: pxLive.at, prices: pxLive.m, source: 'hyperliquid:allMids' } : null),
@@ -167,6 +170,13 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
       return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', ready };
     },
     /* PROTECTED (bearer token, disabled when STATUS_TOKEN is unset): the detailed operational view. */
+    tokApi: async (path, q) => {
+      const tl = tokLiveRef.v; if (!tl) return [503, { ok: false, error: 'unavailable' }];
+      if (path === '/v1/tok/trader') { const w = String(q.get('w') || ''); if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(w)) return [400, { ok: false, error: 'bad_wallet' }];
+        return [200, { ok: true, recording: tl.recording(), since: Math.floor(tl.recSince() / 1000), trades: tl.walletTrades(w) }]; }
+      const ms = String(q.get('m') || '').split(',').filter(Boolean).slice(0, 50); if (!ms.length) return [400, { ok: false, error: 'no_mints' }];
+      return [200, { ok: true, ...(await tokMeta.resolve(ms)) }];
+    },
     getStatus: async () => {
       let dbOk = false; try { dbOk = await store.ping(); } catch { dbOk = false; }
       return { ok: dbOk && ready && !shuttingDown, service: 'saturn-perps-data', version: 1, commit: cfg.buildCommit || null, epoch, serverTime: Math.floor(now() / 1000), uptimeSec: Math.floor((now() - startedAt) / 1000), source: SOURCE,
@@ -179,7 +189,8 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const wss = new WebSocketServer({ noServer: true, maxPayload: cfg.ws.maxPayload });
   /* r158: Discover token list live prices (src/tok-live.js) on its own path; TOK_LIVE=0 turns it off */
   const tokLive = WebSocketClient && process.env.TOK_LIVE !== '0' ? createTokLive({ WebSocketImpl: WebSocketClient, ...(tokLiveUrls ? { urls: tokLiveUrls } : {}),
-    upstreams: String(process.env.TOK_LIVE_UPSTREAMS || 'pumpapi').split(',').map(x => x.trim()), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics }) : null;
+    upstreams: String(process.env.TOK_LIVE_UPSTREAMS || 'pumpapi').split(',').map(x => x.trim()), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics, record: process.env.TOK_RECORD !== '0' }) : null;
+  tokLiveRef.v = tokLive;
   const tokWss = tokLive ? new WebSocketServer({ noServer: true, maxPayload: 4096 }) : null;
   const ipConns = new Map();
   server.on('upgrade', (req, socket, head) => {

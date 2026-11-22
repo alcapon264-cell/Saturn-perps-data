@@ -24,7 +24,7 @@ const pos = v => { const n = typeof v === 'string' ? Number(v) : v; return typeo
 
 export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpportal'], urls = {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
   setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, log = () => {}, metrics = null, maxPerClient = 40, maxMints = 3000, coalesceMs = 250,
-  graceMs = 30000, silentMs = 90000, statsMs = 60000 } = {}) {
+  graceMs = 30000, silentMs = 90000, statsMs = 60000, record = false, recWallets = 50000, recPerWallet = 200, recMints = 60000, recTotal = 200000 } = {}) {
   const inc = n => { try { metrics?.inc(n); } catch {} };
   const U = upstreams.filter(k => k === 'pumpapi' || k === 'pumpportal').map(kind => ({ kind, url: kind === 'pumpapi' ? (urls.pumpapi || PUMPAPI_URL) : (urls.pumpportal || PUMPPORTAL_URL),
     ws: null, open: false, retry: 1000, rt: null, lastMsg: 0, opens: 0, msgs: 0, matched: 0, subscribed: new Set(), lastErr: null }));
@@ -36,6 +36,28 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
   const BIG = [], lastPx = new Map();  /* r163: recent big buys (any token) and the last trade price per token */
   const wref = new Map();             /* r162: wallet -> number of clients following it (Pulse "Following") */
   let flushT = null, running = false, hb = null, st = null, sent = 0;
+  /* r166 recorder (memory only, nothing written to any database): every Pump.fun / PumpSwap trade seen on the stream is kept per wallet
+   * (last recPerWallet trades of the last recWallets active wallets) and every token's name/symbol/metadata uri (last recMints tokens).
+   * Profiles use it to show a trader's buys and sells made anywhere (not only in Saturn) since this server started. */
+  const REC = new Map(), META = new Map(); let recN = 0; const recSince = now();
+  function remember(j, kind) {
+    const mint = j.mint; if (typeof mint !== 'string' || !MINT.test(mint)) return;
+    if (!META.has(mint) || (j.uri && !META.get(mint).u)) { const u = typeof j.uri === 'string' && /^https:\/\/[^\s"<>]{8,300}$/.test(j.uri) ? j.uri : null; const n = clean(j.name), sy = clean(j.symbol);
+      if (n || sy || u) { META.delete(mint); META.set(mint, { n, s: sy, u }); if (META.size > recMints) META.delete(META.keys().next().value); } }
+    const side = kind === 'pumpapi' ? (j.action === 'buy' || j.action === 'sell' ? j.action : null) : (j.txType === 'buy' || j.txType === 'sell' ? j.txType : null);
+    if (!side || (j.quoteMint && j.quoteMint !== SOL)) return;
+    const w = [j.traderPublicKey, j.txSigner, j.trader, j.user].find(x => typeof x === 'string' && MINT.test(x)); if (!w) return;
+    const sig = [j.signature, j.txSignature, j.sig, j.tx].find(x => typeof x === 'string' && SIG.test(x)); if (!sig) return;
+    const sol = pos(j.solAmount != null ? j.solAmount : j.quoteAmount), tok = pos(j.tokenAmount != null ? j.tokenAmount : j.baseAmount);
+    let ts = Number(j.timestamp != null ? j.timestamp : j.blockTime); if (ts > 1e12) ts = Math.floor(ts / 1000); if (!(ts > 0)) ts = Math.floor(now() / 1000);
+    let a = REC.get(w); if (a) REC.delete(w); else a = []; REC.set(w, a);
+    if (a.some(x => x[0] === sig && x[1] === mint)) return;
+    a.push([sig, mint, side, sol, tok, pos(j.price), ts]); recN++; if (a.length > recPerWallet) { a.shift(); recN--; }
+    while (REC.size > recWallets || (recN > recTotal && REC.size > 1)) { const k = REC.keys().next().value; recN -= REC.get(k).length; REC.delete(k); }
+  }
+  function walletTrades(w) { const a = REC.get(w) || [];
+    return a.map(x => { const m = META.get(x[1]); return { sig: x[0], mint: x[1], side: x[2], sol: x[3], tok: x[4], p: x[5], at: x[6], name: m && m.n || null, symbol: m && m.s || null }; }).reverse(); }
+  function meta(mints) { const o = {}; for (const m of mints) { const x = META.get(m); if (x) o[m] = { name: x.n, symbol: x.s, uri: x.u }; } return o; }
 
   /* ---------- upstreams ---------- */
   const on = (ws, ev, f) => { if (typeof ws.on === 'function') ws.on(ev, f); else ws.addEventListener(ev, f); };
@@ -63,6 +85,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     if (s.length > 65536) return;
     const mm = MINT_IN.exec(s); if (!mm) return;
     let big = false; if (BUY_IN.test(s)) { const q = QA_IN.exec(s); big = !!q && Number(q[1]) >= BIG_STORE_MIN; }
+    if (record) { let jr; try { jr = JSON.parse(s); } catch { jr = null; } if (jr && typeof jr === 'object') { try { remember(jr, u.kind); } catch {} } }
     let wm = null; if (!ref.has(mm[1]) && !big) { if (!wref.size) return; wm = TRADER_IN.exec(s); if (!wm || !wref.has(wm[1])) return; }   /* neither a watched token nor a followed wallet: dropped before JSON parsing */
     let j; try { j = JSON.parse(s); } catch { return; }
     if (!j || typeof j !== 'object' || j.mint !== mm[1]) return;
@@ -107,7 +130,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
         try { ws.send(JSON.stringify({ type: 'tok', ...x })); c.sent++; sent++; } catch {} }
     }
   }
-  const watching = () => ref.size > 0 || wref.size > 0 || [...clients.values()].some(c => c.bigMin > 0);
+  const watching = () => record || ref.size > 0 || wref.size > 0 || [...clients.values()].some(c => c.bigMin > 0);
   function reconcile() {
     for (const u of U) { if (watching()) { if (!u.ws && !u.rt) connect(u); else if (u.kind === 'pumpportal') syncPortal(u); } }
     /* nobody watching for a while -> upstreams close (they reopen on the next subscription) */
@@ -150,12 +173,12 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     for (const u of U) { if (u.open && u.ws && t - u.lastMsg > silentMs) { inc('tok_up_silent'); log('tok-live: ' + u.kind + ' silent ' + Math.round((t - u.lastMsg) / 1000) + 's; reconnecting'); closeUp(u); schedule(u); } }
     reconcile();
   }
-  const stats = () => ({ clients: clients.size, mints: ref.size, wallets: wref.size, bigClients: [...clients.values()].filter(c => c.bigMin > 0).length, bigKept: BIG.length, sent, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
+  const stats = () => ({ clients: clients.size, mints: ref.size, wallets: wref.size, bigClients: [...clients.values()].filter(c => c.bigMin > 0).length, bigKept: BIG.length, sent, recWallets: REC.size, recTrades: recN, recMints: META.size, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
   return Object.freeze({
     start() { if (running || !WebSocketImpl || !U.length) return; running = true; hb = setIntervalImpl(beat, 5000); if (hb && hb.unref) hb.unref();
       st = setIntervalImpl(() => { if (clients.size || ref.size) log('tok-live: ' + JSON.stringify(stats())); }, statsMs); if (st && st.unref) st.unref();
       log('tok-live: started ' + U.map(u => u.kind).join('+')); },
     stop() { running = false; if (hb) clearIntervalImpl(hb); if (st) clearIntervalImpl(st); if (flushT) clearTimeoutImpl(flushT); flushT = null; U.forEach(closeUp); for (const ws of clients.keys()) { try { ws.close(); } catch {} } clients.clear(); ref.clear(); },
-    attach, stats, _U: U, _flush: flush, _beat: beat
+    attach, stats, walletTrades, meta, recSince: () => recSince, recording: () => record, _U: U, _flush: flush, _beat: beat
   });
 }
