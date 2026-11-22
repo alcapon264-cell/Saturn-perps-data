@@ -79,3 +79,26 @@ test('view markets: with Hyperliquid REST answering 429, prices + listing come f
     await v.stopLeader();
   } finally { await e.drop(); }
 });
+
+test('r144.3 live prices: Hyperliquid pushes -> 1 s live ticks on /perps/live (newer than the 15 s samples), /v1/pm/px for Up/Down coins', opts, async () => {
+  const H = await fakeHl(); const send = mids => H.S.sockets.forEach(s => s.send(JSON.stringify({ channel: 'allMids', data: { mids } })));
+  const e = await makeEnv({ env: { VIEW_MARKETS: 'HYPE' }, extra: { WebSocketClient: WebSocket, hlWsUrl: H.url } });
+  try {
+    assert.ok(await until(() => H.S.conns >= 1), 'server opened the Hyperliquid socket');
+    const port = await e.app.start({ port: 0, host: '127.0.0.1' }); const base = 'http://127.0.0.1:' + port;
+    const c = new WebSocket('ws://127.0.0.1:' + port + '/perps/live', { headers: { origin: 'https://app.example' } }); const got = [];
+    c.on('message', b => got.push(JSON.parse(String(b)))); await new Promise(r => c.on('open', r));
+    c.send(JSON.stringify({ type: 'subscribe', markets: ['BTC'] })); assert.ok(await until(() => got.some(m => m.type === 'perps_subscribed')));
+    send({ BTC: '90100.5', ETH: '3001', SOL: '150.2', HYPE: '31.5', XRP: '2.1', DOGE: '0.2', BNB: '905' }); await wait(80);
+    await e.clock.advance(1000);
+    assert.ok(await until(() => got.some(m => m.type === 'perps_tick' && m.live === true)), 'live tick arrived');
+    const t1 = got.filter(m => m.type === 'perps_tick'); assert.equal(t1[t1.length - 1].price, 90100.5); assert.equal(t1[t1.length - 1].source, 'hyperliquid:allMids');
+    send({ BTC: '90101', ETH: '3001', SOL: '150.2', HYPE: '31.5', XRP: '2.1', DOGE: '0.2', BNB: '905' }); await wait(60); await e.clock.advance(1000); assert.ok(await until(() => got.filter(m => m.type === 'perps_tick' && m.price === 90101).length === 1));
+    const ticks = got.filter(m => m.type === 'perps_tick'); assert.deepEqual(ticks.map(m => m.seq), ticks.map((_, i) => (ticks[0].seq) + i), 'one rising seq');
+    const n = ticks.length; await e.clock.advance(1000); await wait(50); assert.equal(got.filter(m => m.type === 'perps_tick').length, n, 'unchanged price is not re-sent');
+    const px = await (await fetch(base + '/v1/pm/px')).json(); assert.equal(px.ok, true); assert.equal(px.prices.btc, 90101); assert.equal(px.prices.xrp, 2.1); assert.equal(px.prices.doge, 0.2);
+    assert.equal((await fetch(base + '/v1/pm/px')).headers.get('cache-control'), 'no-store');
+    await e.clock.advance(7000); assert.equal((await fetch(base + '/v1/pm/px')).status, 503, 'older than 5 s -> 503, never stale');
+    c.close();
+  } finally { await e.drop(); H.wss.close(); }
+});

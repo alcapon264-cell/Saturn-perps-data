@@ -127,3 +127,26 @@ test('r143.2 bridge-status: read-only GET of Polymarket /status/{address}; statu
   assert.equal((await on.handle(req('GET'), '/v1/pm/x/bridge-status', new URLSearchParams('address=../deposit'), '1.1.1.1'))[0], 400);
   assert.equal((await on.handle(req('POST', {}), '/v1/pm/x/bridge-status', new URLSearchParams('address=' + svm), '1.1.1.1'))[0], 405);
 });
+
+test('r144.2 price to beat: from polymarket.com/api/crypto/crypto-price (openPrice) when Gamma has none; tries the window-name spellings, remembers the working one, never guesses', async () => {
+  const t0 = 1795000123, start = Math.floor(t0 / 900) * 900, calls = [];
+  const evFor = slug => ({ id: '9', slug, title: 'Bitcoin Up or Down', tags: [{ slug: 'crypto' }], markets: [{ id: '1', slug: slug + '-m', question: 'Bitcoin Up or Down', outcomes: '["Up","Down"]', outcomePrices: '["0.73","0.27"]', clobTokenIds: JSON.stringify(['7'.repeat(70), '8'.repeat(70)]), active: true, closed: false, acceptingOrders: true, enableOrderBook: true }] });
+  let mode = 'ok';
+  const pm = createPmData({ now: () => t0 * 1000, fetchImpl: async u => { const U = new URL(u); calls.push(U.host + U.pathname + U.search);
+    if (U.host === 'gamma-api.polymarket.com') { const s = U.searchParams.get('slug'); return new Response(s === 'btc-updown-15m-' + start || s === 'eth-updown-15m-' + start ? JSON.stringify([evFor(s)]) : '[]'); }
+    if (U.host === 'polymarket.com' && U.pathname === '/api/crypto/crypto-price') {
+      assert.equal(U.searchParams.get('eventStartTime'), new Date(start * 1000).toISOString().replace('.000Z', 'Z')); assert.equal(U.searchParams.get('endDate'), new Date((start + 900) * 1000).toISOString().replace('.000Z', 'Z'));
+      if (mode === 'none') return new Response(JSON.stringify({ openPrice: null, closePrice: null, completed: false }));
+      if (U.searchParams.get('variant') !== 'fifteenminute') return new Response('{"error":"bad variant"}', { status: 400 });
+      return new Response(JSON.stringify({ openPrice: U.searchParams.get('symbol') === 'BTC' ? 84123.45 : 3010.5, closePrice: 84200, completed: false, incomplete: true }));
+    }
+    throw new Error('unexpected ' + u); } });
+  const b = await pm.updown('btc', '15m');
+  assert.equal(b.priceToBeat, 84123.45); assert.equal(b.priceToBeatSource, 'polymarket:crypto-price');
+  assert.deepEqual(calls.filter(c => c.startsWith('polymarket.com')).map(c => new URLSearchParams(c.split('?')[1]).get('variant')), ['fifteen', 'fifteenminute'], 'tries spellings in order');
+  calls.length = 0; const e = await pm.updown('eth', '15m'); assert.equal(e.priceToBeat, 3010.5);
+  assert.deepEqual(calls.filter(c => c.startsWith('polymarket.com')).map(c => new URLSearchParams(c.split('?')[1]).get('variant')), ['fifteenminute'], 'the working spelling is remembered');
+  calls.length = 0; await pm.updown('btc', '15m'); assert.equal(calls.filter(c => c.startsWith('polymarket.com')).length, 0, 'an opening price is kept for the window');
+  mode = 'none'; const pm2 = createPmData({ now: () => t0 * 1000, fetchImpl: async u => { const U = new URL(u); if (U.host === 'gamma-api.polymarket.com') return new Response(JSON.stringify([evFor(U.searchParams.get('slug'))])); return new Response(JSON.stringify({ openPrice: null })); } });
+  assert.equal((await pm2.updown('btc', '15m')).priceToBeat, null, 'no opening price published -> null, never guessed');
+});

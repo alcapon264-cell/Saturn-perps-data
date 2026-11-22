@@ -82,7 +82,7 @@ test('HTTP surface: data routes are GET/OPTIONS only; only the gateway reads bod
   assert.match(prod['src/pm-trade.js'], /maxBody = 16 \* 1024/, 'r143: builder-signing bodies are size-capped');
   const g = prod['src/gateway.js']; assert.match(g, /if \(!G\.executionEnabled\)/, 'transaction routes are behind the execution switch'); assert.match(g, /G\.maxBody/);
   for (const [f, t] of Object.entries(prod)) { if (/live-check/.test(f)) continue; assert.ok(!/\beval\s*\(|new Function|child_process|require\(\s*[^'"]|import\(\s*[^'"]/.test(t) || f === 'server.js', f); }
-  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets', '/v1/pm/wallet/status']);   /* r141 read-only Polygon verifier (GET only, checked below) */
+  assert.deepEqual([...new Set([...h.matchAll(/path === '([^']+)'/g)].map(m => m[1]))].sort(), ['/', '/healthz', '/internal/status', '/v1/perps/candles', '/v1/perps/markets', '/v1/pm/px', '/v1/pm/wallet/status']);   /* r144.3 live coin prices (GET, no body) */   /* r141 read-only Polygon verifier (GET only, checked below) */
 });
 
 test('secrets: no keys, tokens, URLs with credentials or private hosts hard-coded; .env is ignored', () => {
