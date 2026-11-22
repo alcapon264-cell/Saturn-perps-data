@@ -24,7 +24,7 @@ const pos = v => { const n = typeof v === 'string' ? Number(v) : v; return typeo
 
 export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpportal'], urls = {}, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
   setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, log = () => {}, metrics = null, maxPerClient = 40, maxMints = 3000, coalesceMs = 250,
-  graceMs = 30000, silentMs = 90000, statsMs = 60000, record = false, recWallets = 50000, recPerWallet = 200, recMints = 60000, recTotal = 200000 } = {}) {
+  graceMs = 30000, silentMs = 90000, statsMs = 60000, record = false, recWallets = 20000, recPerWallet = 100, recMints = 40000, recTotal = 80000 } = {}) {
   const inc = n => { try { metrics?.inc(n); } catch {} };
   const U = upstreams.filter(k => k === 'pumpapi' || k === 'pumpportal').map(kind => ({ kind, url: kind === 'pumpapi' ? (urls.pumpapi || PUMPAPI_URL) : (urls.pumpportal || PUMPPORTAL_URL),
     ws: null, open: false, retry: 1000, rt: null, lastMsg: 0, opens: 0, msgs: 0, matched: 0, subscribed: new Set(), lastErr: null }));
@@ -40,7 +40,21 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
    * (last recPerWallet trades of the last recWallets active wallets) and every token's name/symbol/metadata uri (last recMints tokens).
    * Profiles use it to show a trader's buys and sells made anywhere (not only in Saturn) since this server started. */
   const REC = new Map(), META = new Map(); let recN = 0; const recSince = now();
-  function remember(j, kind) {
+  const RX = { act: /"(?:action|txType)":"(buy|sell)"/, qm: /"quoteMint":"([^"]{1,60})"/, sig: /"signature":"([1-9A-HJ-NP-Za-km-z]{60,100})"/, tr: /"(?:txSigner|traderPublicKey)":"([1-9A-HJ-NP-Za-km-z]{32,44})"/,
+    sol: /"(?:quoteAmount|solAmount)":([0-9.eE+-]{1,30})/, tok: /"(?:tokenAmount|baseAmount)":([0-9.eE+-]{1,30})/, px: /"(?:priceSol|price)":([0-9.eE+-]{1,30})/,
+    nm: /"name":"((?:[^"\\]|\\.){0,80})"/, sy: /"symbol":"((?:[^"\\]|\\.){0,30})"/, uri: /"uri":"(https:\/\/[^"\s<>]{8,300})"/ };
+  const g = (r, h) => { const m = r.exec(h); return m ? m[1] : undefined; };
+  const unq = v => { if (v == null) return v; try { return JSON.parse('"' + v + '"'); } catch { return null; } };
+  function lite(s, mint) {
+    const h = s.length > 2600 ? s.slice(0, 2600) : s, sol = Number(g(RX.sol, h)), needMeta = !META.has(mint);
+    if (!needMeta && !(sol >= 0.1)) return null;
+    const o = { mint, action: g(RX.act, h), quoteMint: g(RX.qm, h), signature: g(RX.sig, h), txSigner: g(RX.tr, h), quoteAmount: sol, tokenAmount: Number(g(RX.tok, h)), price: Number(g(RX.px, h)) };
+    if (needMeta) { o.name = unq(g(RX.nm, h)); o.symbol = unq(g(RX.sy, h)); o.uri = g(RX.uri, h); }
+    const ti = s.lastIndexOf('"timestamp":'); if (ti > 0) { const t = Number((/^[0-9]{9,14}/.exec(s.slice(ti + 12, ti + 30)) || [])[0]); if (t > 0) o.timestamp = t; }
+    if (!(sol >= 0.1)) o.action = null;
+    return o;
+  }
+  function remember(j, kind) { if (!j) return;
     const mint = j.mint; if (typeof mint !== 'string' || !MINT.test(mint)) return;
     if (!META.has(mint) || (j.uri && !META.get(mint).u)) { const u = typeof j.uri === 'string' && /^https:\/\/[^\s"<>]{8,300}$/.test(j.uri) ? j.uri : null; const n = clean(j.name), sy = clean(j.symbol);
       if (n || sy || u) { META.delete(mint); META.set(mint, { n, s: sy, u }); if (META.size > recMints) META.delete(META.keys().next().value); } }
@@ -85,7 +99,9 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     if (s.length > 65536) return;
     const mm = MINT_IN.exec(s); if (!mm) return;
     let big = false; if (BUY_IN.test(s)) { const q = QA_IN.exec(s); big = !!q && Number(q[1]) >= BIG_STORE_MIN; }
-    if (record) { let jr; try { jr = JSON.parse(s); } catch { jr = null; } if (jr && typeof jr === 'object') { try { remember(jr, u.kind); } catch {} } }
+    /* r171: the recorder no longer JSON-parses every firehose message (that pinned the 0.15-CPU instance and slowed every request).
+     * It reads the few fields it needs with anchored regexes on the head of the message, and skips dust trades (< 0.1 SOL). */
+    if (record) { try { remember(lite(s, mm[1]), u.kind); } catch {} }
     let wm = null; if (!ref.has(mm[1]) && !big) { if (!wref.size) return; wm = TRADER_IN.exec(s); if (!wm || !wref.has(wm[1])) return; }   /* neither a watched token nor a followed wallet: dropped before JSON parsing */
     let j; try { j = JSON.parse(s); } catch { return; }
     if (!j || typeof j !== 'object' || j.mint !== mm[1]) return;
