@@ -88,7 +88,7 @@ test('r142 breaking / new / sub-tags / self-check', async () => {
   const pm = createPmData({ log: (n, d) => logs.push([n, d]), fetchImpl: fakeFetch([
     [/related-tags\/tags/, () => [{ slug: 'trump', label: 'Trump' }, { slug: 'midterms', label: 'Midterms' }, { slug: 'politics', label: 'Politics' }, { slug: 'Bad Slug', label: 'x' }]],
     [/order=startDate/, () => [mv('fresh-one', 0, 10)]],
-    [/limit=100/, () => [mv('calm', 0.01, 90000), mv('spike', -0.40, 60000), mv('tiny-volume', 0.9, 100), mv('jump', 0.25, 20000)]],
+    [/limit=20&offset=0/, () => [mv('calm', 0.01, 90000), mv('spike', -0.40, 60000), mv('tiny-volume', 0.9, 100), mv('jump', 0.25, 20000)]],
     [/\/events\?active=true/, () => [mv('top', 0.02, 1e6)]]
   ], log) });
   const b = await pm.feed('breaking', 0, 2);

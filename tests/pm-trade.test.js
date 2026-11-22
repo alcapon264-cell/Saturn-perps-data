@@ -102,3 +102,15 @@ test('positions: Data API v2 by wallet address; camel or snake fields; bad addre
   const r = await pm.positions(W); assert.equal(r.positions.length, 1); assert.equal(r.positions[0].avgPrice, 0.72); assert.equal(r.positions[0].currentValue, 27.6);
   assert.equal((await pm.handle('/v1/pm/positions', new URLSearchParams('user=0x12'), '3.3.3.3'))[0], 400);
 });
+
+test('r143.1: Live/Breaking read the event pool in pages of 20 (one 100-event response exceeded 16 MB in production); a failed page is skipped', async () => {
+  const seen = [];
+  const ev = (i, live) => ({ id: 'e' + i, slug: 'ev-' + i, title: 'Event ' + i, live, volume24hr: 9000, tags: [{ slug: 'sports' }], markets: [{ id: 'm' + i, slug: 'm-' + i, question: 'Q' + i, outcomes: '["Yes","No"]', outcomePrices: '["0.5","0.5"]', clobTokenIds: JSON.stringify([String(10n ** 69n + BigInt(i * 2)), String(10n ** 69n + BigInt(i * 2 + 1))]), active: true, closed: false, acceptingOrders: true, oneDayPriceChange: i / 1000 }] });
+  const pm = createPmData({ log: () => {}, fetchImpl: async u => { const q = new URL(u).searchParams; seen.push([q.get('limit'), q.get('offset')]);
+    if (q.get('offset') === '40') return new Response('too big', { status: 200, headers: { 'content-length': '1' } }).text().then(() => { throw Object.assign(new Error('body_too_large'), { logged: true }); });
+    const off = +q.get('offset'); return new Response(JSON.stringify(Array.from({ length: off >= 80 ? 5 : 20 }, (_, k) => ev(off + k, (off + k) % 3 === 0)))); } });
+  const live = await pm.feed('live', 0, 8);
+  assert.ok(seen.every(([l]) => l === '20'), 'never asks for more than 20 events at once');
+  assert.ok(live.markets.length === 8 && live.markets.every(m => m.live), 'live events from the pages that loaded');
+  const br = await pm.feed('breaking', 0, 5); assert.equal(br.markets.length, 5);
+});
