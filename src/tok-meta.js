@@ -11,7 +11,7 @@ const cleanTxt = v => typeof v === 'string' ? v.replace(/[\u0000-\u001f<>]/g, ''
 const okImg = v => { if (typeof v !== 'string' || v.length > 400) return null; try { const u = new URL(v); return u.protocol === 'https:' && okHost(u.hostname) ? u.href : null; } catch { return null; } };
 const ipfsFix = v => typeof v === 'string' ? v.replace(/^ipfs:\/\//, 'https://ipfs.io/ipfs/') : v;
 
-export function createTokMeta({ fetchImpl = globalThis.fetch, now = Date.now, tok = () => null, okTtl = 6 * 3600e3, badTtl = 20 * 60e3, cap = 20000, perCall = 16 } = {}) {
+export function createTokMeta({ fetchImpl = globalThis.fetch, now = Date.now, tok = () => null, okTtl = 6 * 3600e3, badTtl = 3 * 60e3, partTtl = 90e3, cap = 20000, perCall = 16 } = {}) {
   const C = new Map();   /* mint -> { at, v:{name,symbol,image}|null } */
   const inflight = new Map();
   async function getJson(url) {
@@ -25,16 +25,22 @@ export function createTokMeta({ fetchImpl = globalThis.fetch, now = Date.now, to
       return JSON.parse(txt);
     } catch { return null; } finally { clearTimeout(t); }
   }
+  /* r201: IPFS gateways are often slow; the same content is asked from three public gateways at once and the first good answer wins */
+  async function getFast(url) {
+    const m = /\/ipfs\/([A-Za-z0-9]{40,80})(\/[^?#]*)?/.exec(String(url || '')); if (!m) return getJson(url);
+    const path = m[1] + (m[2] || ''), urls = [url, 'https://gateway.pinata.cloud/ipfs/' + path, 'https://dweb.link/ipfs/' + path];
+    return new Promise(res => { let left = urls.length, done = false; for (const u of urls) getJson(u).then(j => { if (!done && j && typeof j === 'object') { done = true; res(j); } }).finally(() => { if (--left === 0 && !done) res(null); }); });
+  }
   async function one(mint) {
     const live = (() => { try { const t = tok(); return t && t.meta ? t.meta([mint])[mint] : null; } catch { return null; } })();
     let name = live && live.name || null, symbol = live && live.symbol || null, image = null;
-    if (live && live.uri) { const j = await getJson(ipfsFix(live.uri)); if (j && typeof j === 'object') { image = okImg(ipfsFix(j.image)); name = name || cleanTxt(j.name); symbol = symbol || cleanTxt(j.symbol); } }
+    if (live && live.uri) { const j = await getFast(ipfsFix(live.uri)); if (j && typeof j === 'object') { image = okImg(ipfsFix(j.image)); name = name || cleanTxt(j.name); symbol = symbol || cleanTxt(j.symbol); } }
     if (!image || !name) { const j = await getJson(PUMP_COIN + mint); if (j && typeof j === 'object' && j.mint === mint) { image = image || okImg(ipfsFix(j.image_uri)); name = name || cleanTxt(j.name); symbol = symbol || cleanTxt(j.symbol); } }
     return name || symbol || image ? { name, symbol, image } : null;
   }
   function get(mint) {
     const c = C.get(mint), t = now();
-    if (c && t - c.at < (c.v ? okTtl : badTtl)) return Promise.resolve(c.v);
+    if (c && t - c.at < (c.v && c.v.image ? okTtl : c.v ? partTtl : badTtl)) return Promise.resolve(c.v);
     if (inflight.has(mint)) return inflight.get(mint);
     const p = one(mint).catch(() => null).then(v => { C.delete(mint); C.set(mint, { at: now(), v }); if (C.size > cap) C.delete(C.keys().next().value); return v; }).finally(() => inflight.delete(mint));
     inflight.set(mint, p); return p;
@@ -43,7 +49,7 @@ export function createTokMeta({ fetchImpl = globalThis.fetch, now = Date.now, to
   async function resolve(mints) {
     const list = [...new Set(mints.filter(m => typeof m === 'string' && MINT.test(m)))].slice(0, 50), out = {}, t = now(); let fresh = 0; const jobs = [];
     for (const m of list) { const c = C.get(m);
-      if (c && t - c.at < (c.v ? okTtl : badTtl)) { if (c.v) out[m] = c.v; continue; }
+      if (c && t - c.at < (c.v && c.v.image ? okTtl : c.v ? partTtl : badTtl)) { if (c.v) out[m] = c.v; continue; }
       if (fresh >= perCall && !inflight.has(m)) continue; fresh++; jobs.push(get(m).then(v => { if (v) out[m] = v; })); }
     await Promise.all(jobs); return { meta: out, pending: list.filter(m => !(m in out) && !(C.get(m) && !C.get(m).v)).length };
   }
