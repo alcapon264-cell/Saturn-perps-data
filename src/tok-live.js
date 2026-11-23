@@ -94,6 +94,45 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     if (a.length > pxPerMint * 6) { a.splice(0, 6); pxN--; }
     while (pxN > pxTotal && PXH.size > 1) { const k = PXH.keys().next().value; pxN -= PXH.get(k).length / 6; PXH.delete(k); }
   }
+  /* r199 DISCOVER FEED (memory only, from the same stream): per token, when Saturn first saw it trade, its live market cap / price, and
+   * one-minute activity buckets (buys, sells, SOL in and out, distinct traders). New = tokens first seen in the last minute on a fresh
+   * bonding curve; Hot = tokens whose last 5 minutes show many distinct buyers, real buy volume and a rising market cap. */
+  const ACT = new Map(); const ACT_CAP = 6000, startedAt = now();
+  const A_RX = { act: /"action":"(buy|sell|create)"/, mcu: /"marketCapUsd":([0-9.eE+-]{1,30})/, mcs: /"marketCapSol":([0-9.eE+-]{1,30})/, pu: /"priceUsd":([0-9.eE+-]{1,30})/, tr: /"(?:txSigner|traderPublicKey)":"([1-9A-HJ-NP-Za-km-z]{32,44})"/ };
+  function actRecord(s, mint) {
+    const a = (A_RX.act.exec(s) || [])[1]; if (!a) return;
+    const t = now(), mi = Math.floor(t / 60000), sol = Number((SOLV_RX.exec(s) || [])[1]) || 0, mcu = Number((A_RX.mcu.exec(s) || [])[1]) || 0, mcs = Number((A_RX.mcs.exec(s) || [])[1]) || 0, pu = Number((A_RX.pu.exec(s) || [])[1]) || 0;
+    let r = ACT.get(mint);
+    if (!r) { if (ACT.size >= ACT_CAP) { let oldK = null, oldT = Infinity; let n = 0; for (const [k, v] of ACT) { if (v.last < oldT) { oldT = v.last; oldK = k; } if (++n > 400) break; } if (oldK) ACT.delete(oldK); }
+      r = { first: t, firstMcSol: mcs || null, created: a === 'create', last: t, mcu: 0, mcs: 0, pu: 0, b: [] }; ACT.set(own(mint), r); }
+    if (a === 'create') r.created = true;
+    r.last = t; if (mcu > 0) r.mcu = mcu; if (mcs > 0) r.mcs = mcs; if (pu > 0) r.pu = pu;
+    if (a === 'create') return;
+    let b = r.b[r.b.length - 1]; if (!b || b.m !== mi) { b = { m: mi, nb: 0, ns: 0, sb: 0, ss: 0, w: new Set(), mc0: r.mcu || mcu || 0 }; r.b.push(b); if (r.b.length > 10) r.b.shift(); }
+    if (a === 'buy') { b.nb++; b.sb += sol; } else { b.ns++; b.ss += sol; }
+    if (b.w.size < 300) { const w = (A_RX.tr.exec(s) || [])[1]; if (w) b.w.add(w); }
+  }
+  function actView(mint, r, mins) {
+    const t = now(), from = Math.floor(t / 60000) - mins + 1, B = r.b.filter(x => x.m >= from), w = new Set(); let nb = 0, ns = 0, sb = 0, ss = 0;
+    for (const x of B) { nb += x.nb; ns += x.ns; sb += x.sb; ss += x.ss; for (const k of x.w) w.add(k); }
+    const mc0 = B.length ? B[0].mc0 : 0, m = META.get(mint);
+    return { mint, name: m && m.n || null, symbol: m && m.s || null, mcUsd: r.mcu || null, priceUsd: r.pu || null, born: r.first, created: r.created,
+      buys: nb, sells: ns, buySol: +sb.toFixed(3), sellSol: +ss.toFixed(3), traders: w.size, chg: mc0 > 0 && r.mcu > 0 ? +((r.mcu / mc0 - 1) * 100).toFixed(1) : null, solUsd: r.mcs > 0 && r.mcu > 0 ? r.mcu / r.mcs : null };
+  }
+  function feed(kind) {
+    const t = now(), out = [];
+    if (kind === 'new') {
+      const warm = t - startedAt > 90000;   /* right after a restart every token looks "new": only tokens seen being created count then */
+      for (const [k, r] of ACT) { if (t - r.first > 60000) continue; if (!r.created && (!warm || !(r.firstMcSol > 0 && r.firstMcSol < 45))) continue; out.push(actView(k, r, 2)); }
+      return out.sort((a, b) => b.born - a.born).slice(0, 40);
+    }
+    for (const [k, r] of ACT) {
+      if (t - r.last > 120000) continue; const v = actView(k, r, 5);
+      if (v.traders < 8 || v.buys < 10 || v.buySol < 2 || !(v.chg > 5) || v.buySol < v.sellSol * 0.8) continue;
+      v.score = v.traders * Math.log1p(v.buySol) * (1 + Math.min(v.chg, 300) / 100) * (t - r.first < 3 * 3600e3 ? 1.3 : 1); out.push(v);
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, 40);
+  }
   /* candles for one token, aggregated to tf seconds (1..3600), oldest first, at most 1500 */
   function candles(mint, tf = 1) {
     const a = PXH.get(mint); if (!a) return [];
@@ -135,7 +174,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     let big = false; if (BUY_IN.test(s)) { const q = QA_IN.exec(s); big = !!q && Number(q[1]) >= BIG_STORE_MIN; }
     /* r171: the recorder no longer JSON-parses every firehose message (that pinned the 0.15-CPU instance and slowed every request).
      * It reads the few fields it needs with anchored regexes on the head of the message, and skips dust trades (< 0.1 SOL). */
-    if (record) { try { remember(lite(s, mm[1]), u.kind); } catch {} if (u.kind === 'pumpapi') { try { pxRecord(s, mm[1]); } catch {} } }
+    if (record) { try { remember(lite(s, mm[1]), u.kind); } catch {} if (u.kind === 'pumpapi') { try { pxRecord(s, mm[1]); } catch {} try { actRecord(s, mm[1]); } catch {} } }
     let wm = null; if (!ref.has(mm[1]) && !big) { if (!wref.size) return; wm = TRADER_IN.exec(s); if (!wm || !wref.has(wm[1])) return; }   /* neither a watched token nor a followed wallet: dropped before JSON parsing */
     let j; try { j = JSON.parse(s); } catch { return; }
     if (!j || typeof j !== 'object' || j.mint !== mm[1]) return;
@@ -223,12 +262,12 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     for (const u of U) { if (u.open && u.ws && t - u.lastMsg > silentMs) { inc('tok_up_silent'); log('tok-live: ' + u.kind + ' silent ' + Math.round((t - u.lastMsg) / 1000) + 's; reconnecting'); closeUp(u); schedule(u); } }
     reconcile();
   }
-  const stats = () => ({ clients: clients.size, mints: ref.size, wallets: wref.size, bigClients: [...clients.values()].filter(c => c.bigMin > 0).length, bigKept: BIG.length, sent, recWallets: REC.size, recTrades: recN, recMints: META.size, pxMints: PXH.size, pxCandles: pxN, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
+  const stats = () => ({ clients: clients.size, mints: ref.size, wallets: wref.size, bigClients: [...clients.values()].filter(c => c.bigMin > 0).length, bigKept: BIG.length, sent, recWallets: REC.size, recTrades: recN, recMints: META.size, pxMints: PXH.size, pxCandles: pxN, actTokens: ACT.size, upstreams: U.map(u => ({ kind: u.kind, open: u.open, opens: u.opens, msgs: u.msgs, matched: u.matched, subscribed: u.subscribed.size, lastErr: u.lastErr })) });
   return Object.freeze({
     start() { if (running || !WebSocketImpl || !U.length) return; running = true; hb = setIntervalImpl(beat, 5000); if (hb && hb.unref) hb.unref();
       st = setIntervalImpl(() => { if (clients.size || ref.size) log('tok-live: ' + JSON.stringify(stats())); }, statsMs); if (st && st.unref) st.unref();
       log('tok-live: started ' + U.map(u => u.kind).join('+')); },
     stop() { running = false; if (hb) clearIntervalImpl(hb); if (st) clearIntervalImpl(st); if (flushT) clearTimeoutImpl(flushT); flushT = null; U.forEach(closeUp); for (const ws of clients.keys()) { try { ws.close(); } catch {} } clients.clear(); ref.clear(); },
-    attach, stats, walletTrades, meta, candles, recSince: () => recSince, recording: () => record, _U: U, _flush: flush, _beat: beat
+    attach, stats, walletTrades, meta, candles, feed, recSince: () => recSince, recording: () => record, _U: U, _flush: flush, _beat: beat
   });
 }

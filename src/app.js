@@ -207,6 +207,9 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
       const tl = tokLiveRef.v; if (!tl) return [503, { ok: false, error: 'unavailable' }];
       if (path === '/v1/tok/trader') { const w = String(q.get('w') || ''); if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(w)) return [400, { ok: false, error: 'bad_wallet' }];
         return [200, { ok: true, recording: tl.recording(), since: Math.floor(tl.recSince() / 1000), trades: tl.walletTrades(w) }]; }
+      if (path === '/v1/tok/feed') { const kind = String(q.get('kind') || ''); if (kind !== 'new' && kind !== 'hot') return [400, { ok: false, error: 'bad_kind' }];
+        const list = tl.feed(kind); let pics = {}; try { pics = (await tokMeta.resolve(list.map(x => x.mint))).meta || {}; } catch {}
+        return [200, { ok: true, kind, recording: tl.recording(), at: Math.floor(now() / 1000), tokens: list.map(x => ({ ...x, name: x.name || (pics[x.mint] && pics[x.mint].name) || null, symbol: x.symbol || (pics[x.mint] && pics[x.mint].symbol) || null, image: pics[x.mint] && pics[x.mint].image || null })) }]; }
       if (path === '/v1/tok/candles') { const m = String(q.get('mint') || ''); if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(m)) return [400, { ok: false, error: 'bad_mint' }];
         const tf = Number(q.get('tf') || 1); if (![1, 5, 15, 60, 300, 900, 3600].includes(tf)) return [400, { ok: false, error: 'bad_tf' }];
         return [200, { ok: true, mint: m, tf, unit: 'sol', recording: tl.recording(), since: Math.floor(tl.recSince() / 1000), candles: tl.candles(m, tf) }]; }

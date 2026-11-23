@@ -82,3 +82,21 @@ test('r177 price history: 1-second SOL candles per token from the stream, aggreg
   assert.ok(await until(() => T.candles(M2).length === 3)); assert.ok(T.stats().pxCandles <= 6, 'pxTotal cap');
   cl.close(); T.stop(); cs.close(); await pa.close();
 });
+
+test('r199 discover feed: New = created / fresh-curve tokens of the last minute; Hot = many distinct buyers, real buy volume, rising market cap', async () => {
+  const pa = await upstream(); let t0 = 1800000000000;
+  const T = createTokLive({ WebSocketImpl: WebSocket, urls: { pumpapi: pa.url }, upstreams: ['pumpapi'], statsMs: 3600000, record: true, now: () => t0 });
+  T.start();
+  const cs = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await new Promise(r => cs.on('listening', r)); cs.on('connection', ws => T.attach(ws, {}));
+  const cl = new WebSocket('ws://127.0.0.1:' + cs.address().port); await new Promise(r => cl.on('open', r)); cl.send(JSON.stringify({ type: 'sub', mints: [M1], trades: true }));
+  T._beat(); assert.ok(await until(() => pa.conns.length === 1));
+  const NEW = id('Newc'), HOT = id('Hotc'), OLD = id('Oldc');
+  pa.send({ mint: NEW, action: 'create', txSigner: W1, signature: SIG('c'), name: 'Fresh', symbol: 'FRS', marketCapSol: 28, marketCapUsd: 3900, priceUsd: 0.0000039, timestamp: 1 });
+  pa.send({ mint: OLD, action: 'buy', txSigner: W1, signature: SIG('o'), quoteAmount: 1, marketCapSol: 900, marketCapUsd: 126000, priceUsd: 0.000126, timestamp: 1 });
+  for (let i = 0; i < 12; i++) pa.send({ mint: HOT, action: 'buy', txSigner: id('Wx' + 'abcdefghjkmnpqrstuvw'[i]), signature: SIG('h' + i), quoteAmount: 0.5, marketCapSol: 100 + i * 5, marketCapUsd: 14000 + i * 700, priceUsd: 0.000014, timestamp: 1 });
+  assert.ok(await until(() => T.feed('hot').length === 1 && T.feed('new').length >= 1));
+  const nw = T.feed('new').map(x => x.mint); assert.ok(nw.includes(NEW), 'created token is new'); assert.ok(!nw.includes(OLD), 'an old token waking up is not new (server just started)');
+  const h = T.feed('hot')[0]; assert.equal(h.mint, HOT); assert.equal(h.traders, 12); assert.ok(h.chg > 5);
+  t0 += 61000; assert.ok(!T.feed('new').some(x => x.mint === NEW), 'after a minute it is no longer new');
+  cl.close(); T.stop(); cs.close(); await pa.close();
+});
