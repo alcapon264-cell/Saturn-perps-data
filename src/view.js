@@ -41,7 +41,7 @@ export function loadBundledLogos(keys, dir = new URL('../assets/official-logos/'
   return out;
 }
 
-export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, rand = Math.random, metrics, log = () => {}, hub = null, coreIconFallback = () => null, bundledLogos = null, hlWs = null }) {
+export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = globalThis.fetch, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, rand = Math.random, metrics, log = () => {}, hub = null, coreIconFallback = () => null, viewIconFallback = () => null, bundledLogos = null, hlWs = null }) {
   const V = cfg.view; const KEYS = Object.freeze([...(V ? V.markets : [])]);
   const enabled = KEYS.length > 0;
   const T = m => VIEW_MARKET_TABLE[m];
@@ -278,7 +278,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     return { volume24h: c.dayNtlVlm != null && c.dayNtlVlm >= 0 ? c.dayNtlVlm : null, openInterest: c.openInterest != null && c.openInterest >= 0 && px > 0 ? +(c.openInterest * px).toFixed(2) : null };
   }
   const stateFromAge = ageMs => ageMs == null ? 'no_data' : ageMs <= cfg.staleMult * cfg.intervalSec * 1000 ? 'live' : ageMs <= cfg.downSec * 1000 ? 'stale' : 'down';
-  const hasLogo = async m => BUNDLED.has(m) || !!(await logoUrl(m));
+  const hasLogo = async m => { if (BUNDLED.has(m)) return true; const u = await logoUrl(m); if (!u) return false; const c = logos.get(m); if (c && c.url === u && c.v === null) return false; if (!c || c.url !== u) logo(m).catch(() => {}); return true; };
 
   /* the rows appended to /v1/perps/markets: EVERY configured view market (identity always; price only when reliable). Always executable:false. */
   async function marketsView() {
@@ -310,7 +310,10 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
   async function logoUrl(m) {
     const st = await sharedState();
     if (MARKET_KEYS.includes(m)) { const a = st.coreLogo[m]; if (a && logoUrlAllowed(a)) return a; const b = coreIconFallback(m); return b && logoUrlAllowed(b) ? b : null; }
-    if (isViewMarket(m)) { const q = leader ? Q[m] : st.q[m]; return q && q.idOk === true && q.logoUrl && logoUrlAllowed(q.logoUrl) ? q.logoUrl : null; }
+    if (isViewMarket(m)) { const q = leader ? Q[m] : st.q[m]; if (q && q.idOk === true && q.logoUrl && logoUrlAllowed(q.logoUrl)) return q.logoUrl;
+      /* r180: CoinGecko answers Render's shared IP with 429, so crypto logos never arrived. Fallback: the coin's picture from a fixed,
+       * code-pinned source (Jupiter's verified token list by Solana mint, the Trust Wallet assets repo, or the xStocks token for stocks). */
+      try { const f = viewIconFallback(m); return f && typeof f === 'string' ? f : null; } catch { return null; } }
     return null;
   }
   const coreLogoUrl = async m => (BUNDLED.has(m) ? 'bundled' : await logoUrl(m));
@@ -320,9 +323,9 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
   async function logo(m) {
     if (BUNDLED.has(m)) return BUNDLED.get(m);
     const url = await logoUrl(m); if (!url) return null;
-    const c = logos.get(m); if (c && c.url === url && c.v !== undefined && now() - c.at < 24 * 3600 * 1000) return c.v;
+    const c = logos.get(m); if (c && c.url === url && c.v !== undefined && now() - c.at < (c.v === null ? 30 * 60 * 1000 : 24 * 3600 * 1000)) return c.v;
     if (c && c.p) return c.p;
-    const p = fetchLogo(fetchImpl, url, { timeoutMs: cfg.timeoutMs }).then(r => { const v = r.ok ? { bytes: r.bytes, type: r.type } : null; logos.set(m, { url, at: now(), v }); metrics?.inc('logo_fetch_' + (r.ok ? 'ok' : r.outcome)); return v; });
+    const p = fetchLogo(fetchImpl, url, { timeoutMs: cfg.timeoutMs, anyHost: !logoUrlAllowed(url) }).then(r => { const v = r.ok ? { bytes: r.bytes, type: r.type } : null; logos.set(m, { url, at: now(), v }); metrics?.inc('logo_fetch_' + (r.ok ? 'ok' : r.outcome)); return v; });
     logos.set(m, { url, at: 0, p }); return p;
   }
 

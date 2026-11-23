@@ -60,7 +60,27 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
       liveSent.set(m, { price: x.price, at: x.at }); hub.publishTick({ market: m, price: x.price, observedAt: Math.floor(x.at / 1000) }, { live: true }); metrics.inc('live_ticks'); }
   }, 1000) : null; if (liveTimer && liveTimer.unref) liveTimer.unref();
   const liveFor = m => { const x = liveSent.get(m); return x && now() - x.at <= 5000 ? x : null; };
-  view = createViewMarkets({ hlWs, cfg, db, readerDb, fetchImpl: viewFetchImpl, now, setTimeoutImpl, clearTimeoutImpl, rand, metrics, log, hub, coreIconFallback: m => icons.get(MARKET_KEYS.map(k => MARKETS[k])).get(MARKETS[m]) || null });
+  /* r180 logo sources for view markets CoinGecko cannot serve us (it answers Render's IP with 429). Fixed in code; nothing comes from a client. */
+  const TW = (k, path) => [k, { tw: path }], ETHA = a => 'ethereum/assets/' + a;
+  const VIEW_LOGO = Object.freeze(Object.fromEntries([
+    TW('DOGE', 'doge/info'), TW('XRP', 'ripple/info'), TW('SUI', 'sui/info'), TW('AVAX', 'avalanchec/info'), TW('LTC', 'litecoin/info'), TW('ADA', 'cardano/info'),
+    TW('TRX', 'tron/info'), TW('DOT', 'polkadot/info'), TW('BCH', 'bitcoincash/info'), TW('TON', 'ton/info'), TW('APT', 'aptos/info'), TW('SEI', 'sei/info'),
+    TW('TIA', 'celestia/info'), TW('INJ', 'injective/info'), TW('ARB', 'arbitrum/info'), TW('OP', 'optimism/info'),
+    TW('LINK', ETHA('0x514910771AF9Ca656af840dff83E8264EcF986CA')), TW('UNI', ETHA('0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984')), TW('AAVE', ETHA('0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9')),
+    TW('ENA', ETHA('0x57e114B691Db790C35207b2e685D4A43181e6061')), TW('ONDO', ETHA('0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3')), TW('WLD', ETHA('0x163f8C2467924be0ae7B5347228CABF260318753')),
+    ['WIF', { mint: 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm' }], ['TRUMP', { mint: '6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN' }],
+    ['PENGU', { mint: '2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv' }], ['FARTCOIN', { mint: '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump' }],
+    ['PUMP', { mint: 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn' }],
+    ...['TSLA', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'COIN', 'HOOD', 'PLTR', 'MSTR', 'AMD', 'NFLX'].map(k => [k, { stock: k }])
+  ]));
+  const ICON_MINTS = [...MARKET_KEYS.map(k => MARKETS[k]), ...Object.values(VIEW_LOGO).filter(f => f.mint).map(f => f.mint)];
+  const stocksRef = { v: null };
+  view = createViewMarkets({ hlWs, cfg, db, readerDb, fetchImpl: viewFetchImpl, now, setTimeoutImpl, clearTimeoutImpl, rand, metrics, log, hub, coreIconFallback: m => icons.get(ICON_MINTS).get(MARKETS[m]) || null,
+    viewIconFallback: m => { const f = VIEW_LOGO[m]; if (!f) return null;
+      if (f.mint) return icons.get(ICON_MINTS).get(f.mint) || null;
+      if (f.tw) return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/' + f.tw + '/logo.png';
+      if (f.stock) return stocksRef.v ? stocksRef.v.iconFor(f.stock) : null;
+      return null; } });
   async function viewSnapshot(m) { const rows = await view.marketsView(); const r = rows.find(x => x.market === m); return r ? { market: m, price: r.price, observedAt: r.observedAt, ageMs: r.ageMs, state: r.state } : null; }
   const engine = createCandleEngine({ store, cfg, now, metrics, onCandle: (m, k) => hub.publishCandle(m, k) });
   const recorder = createRecorder({
@@ -151,7 +171,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const pm = createPmData({ fetchImpl: pmFetchImpl || viewFetchImpl, limiter, now, metrics, log, tradingState: pmTrade });   /* r137 Prediction data */
   const pmWallet = createPmWalletVerifier({ fetchImpl: viewFetchImpl, rpcUrl: cfg.polygonRpcUrl });
   const tokLiveRef = { v: null };
-  const stocks = createStocks({ fetchImpl: iconFetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, log, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl });
+  const stocks = stocksRef.v = createStocks({ fetchImpl: iconFetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, log, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl });
   const tokMeta = createTokMeta({ fetchImpl: viewFetchImpl, now, tok: () => tokLiveRef.v });
   const handler = createHttpHandler({
     cfg, store: readStore, limiter, now, metrics, gateway, hlGateway, pyth, pm, pmWallet, pmTrade, isShuttingDown: () => shuttingDown,

@@ -127,8 +127,11 @@ export function sniffImage(b) {
   if (b.length > 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
   return null;
 }
-export async function fetchLogo(fetchImpl, url, { timeoutMs = 8000, maxBytes = 256 * 1024 } = {}) {
-  if (!logoUrlAllowed(url)) return { ok: false, outcome: 'host_not_allowed' };
+/* r180: anyHost = a URL the service itself took from a trusted listing (Jupiter's verified token list); still https only, no credentials, port 443,
+ * bounded size, and the bytes must sniff as an image */
+const httpsPlain = url => { try { const u = new URL(url); return u.protocol === 'https:' && !u.username && !u.password && (u.port === '' || u.port === '443'); } catch { return false; } };
+export async function fetchLogo(fetchImpl, url, { timeoutMs = 8000, maxBytes = 256 * 1024, anyHost = false } = {}) {
+  if (!(anyHost ? httpsPlain(url) : logoUrlAllowed(url))) return { ok: false, outcome: 'host_not_allowed' };
   const r = await bounded(fetchImpl, url, { method: 'GET', headers: { accept: 'image/png,image/jpeg,image/webp,image/gif' } }, { timeoutMs, maxBody: maxBytes, binary: true });
   if (!r.ok) return r;
   const type = sniffImage(r.bytes);

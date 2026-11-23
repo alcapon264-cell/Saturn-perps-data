@@ -120,5 +120,7 @@ export function createStocks({ fetchImpl = globalThis.fetch, jupBase = TOKENS_BA
     get().then(r => { if (ws.readyState === 1) try { ws.send(JSON.stringify(r.ok ? { type: 'snap', at: r.at, stocks: r.stocks } : { type: 'err' })); } catch {} });
   }
   function stop() { if (loop) clearIntervalImpl(loop); loop = null; for (const ws of clients) { try { ws.close(); } catch {} } clients.clear(); }
-  return Object.freeze({ get, attach, stop, _list: list, _discover: discover, stats: () => ({ clients: clients.size, mints: mints.size, prices: px.size, err }) });
+  /* r180: the verified xStock picture for a ticker (used as the logo of the same company's perps market); starts discovery if needed */
+  function iconFor(ticker) { kickDiscover(); const v = mints.get(String(ticker || '').toUpperCase()); if (!v) return null; const p = px.get(v.mint); return icons.get(v.mint) || (p && p.icon) || null; }
+  return Object.freeze({ get, attach, stop, iconFor, _list: list, _discover: discover, stats: () => ({ clients: clients.size, mints: mints.size, prices: px.size, err }) });
 }
