@@ -29,7 +29,7 @@ export const MARKET_VENUES = Object.freeze({
   HYPE: 'hyperliquid', ZEC: 'hyperliquid', JUP: 'hyperliquid', NEAR: 'hyperliquid', BNB: 'hyperliquid',
   SNDK: 'hyperliquid:xyz', SPCX: 'hyperliquid:xyz', SKHYNIX: 'hyperliquid:xyz',
   /* r179 */
-  DOGE: 'hyperliquid', XRP: 'hyperliquid', SUI: 'hyperliquid', AVAX: 'hyperliquid', LINK: 'hyperliquid', LTC: 'hyperliquid', ADA: 'hyperliquid', TRX: 'hyperliquid', AAVE: 'hyperliquid', ENA: 'hyperliquid', WIF: 'hyperliquid', FARTCOIN: 'hyperliquid', PUMP: 'hyperliquid', TRUMP: 'hyperliquid', PENGU: 'hyperliquid', ARB: 'hyperliquid', APT: 'hyperliquid', TON: 'hyperliquid', DOT: 'hyperliquid', BCH: 'hyperliquid', ONDO: 'hyperliquid', TIA: 'hyperliquid', WLD: 'hyperliquid', UNI: 'hyperliquid', OP: 'hyperliquid', INJ: 'hyperliquid', SEI: 'hyperliquid',
+  DOGE: 'hyperliquid', XRP: 'hyperliquid', SUI: 'hyperliquid', AVAX: 'hyperliquid', LINK: 'hyperliquid', LTC: 'hyperliquid', ADA: 'hyperliquid', TRX: 'hyperliquid', AAVE: 'hyperliquid', ENA: 'hyperliquid', WIF: 'hyperliquid', FARTCOIN: 'hyperliquid', PUMP: 'hyperliquid', TRUMP: 'hyperliquid', PENGU: 'hyperliquid', ARB: 'hyperliquid', APT: 'hyperliquid', DOT: 'hyperliquid', BCH: 'hyperliquid', ONDO: 'hyperliquid', TIA: 'hyperliquid', WLD: 'hyperliquid', UNI: 'hyperliquid', OP: 'hyperliquid', INJ: 'hyperliquid', SEI: 'hyperliquid',
   TSLA: 'hyperliquid:xyz', NVDA: 'hyperliquid:xyz', AAPL: 'hyperliquid:xyz', MSFT: 'hyperliquid:xyz', GOOGL: 'hyperliquid:xyz', AMZN: 'hyperliquid:xyz', META: 'hyperliquid:xyz', COIN: 'hyperliquid:xyz', HOOD: 'hyperliquid:xyz', PLTR: 'hyperliquid:xyz', MSTR: 'hyperliquid:xyz', AMD: 'hyperliquid:xyz', NFLX: 'hyperliquid:xyz'
 });
 

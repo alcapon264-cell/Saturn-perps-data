@@ -64,7 +64,6 @@ export const VIEW_MARKET_TABLE = Object.freeze({
   PENGU:   Object.freeze({ name: 'Pudgy Penguins', dex: '', venueCoins: ['PENGU'], check: 'coingecko', coingeckoId: 'pudgy-penguins', cgSymbol: 'pengu', cgName: null, category: 'major', range: [0.000001, 10000000] }),
   ARB:     Object.freeze({ name: 'Arbitrum', dex: '', venueCoins: ['ARB'], check: 'coingecko', coingeckoId: 'arbitrum', cgSymbol: 'arb', cgName: null, category: 'major', range: [0.000001, 10000000] }),
   APT:     Object.freeze({ name: 'Aptos', dex: '', venueCoins: ['APT'], check: 'coingecko', coingeckoId: 'aptos', cgSymbol: 'apt', cgName: null, category: 'major', range: [0.000001, 10000000] }),
-  TON:     Object.freeze({ name: 'Toncoin', dex: '', venueCoins: ['TON'], check: 'coingecko', coingeckoId: 'the-open-network', cgSymbol: 'ton', cgName: null, category: 'major', range: [0.000001, 10000000] }),
   DOT:     Object.freeze({ name: 'Polkadot', dex: '', venueCoins: ['DOT'], check: 'coingecko', coingeckoId: 'polkadot', cgSymbol: 'dot', cgName: null, category: 'major', range: [0.000001, 10000000] }),
   BCH:     Object.freeze({ name: 'Bitcoin Cash', dex: '', venueCoins: ['BCH'], check: 'coingecko', coingeckoId: 'bitcoin-cash', cgSymbol: 'bch', cgName: null, category: 'major', range: [0.000001, 10000000] }),
   ONDO:    Object.freeze({ name: 'Ondo', dex: '', venueCoins: ['ONDO'], check: 'coingecko', coingeckoId: 'ondo-finance', cgSymbol: 'ondo', cgName: null, category: 'major', range: [0.000001, 10000000] }),

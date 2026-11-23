@@ -73,7 +73,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const TW = (k, path) => [k, { tw: path }], ETHA = a => 'ethereum/assets/' + a;
   const VIEW_LOGO = Object.freeze(Object.fromEntries([
     TW('DOGE', 'doge/info'), TW('XRP', 'ripple/info'), TW('SUI', 'sui/info'), TW('AVAX', 'avalanchec/info'), TW('LTC', 'litecoin/info'), TW('ADA', 'cardano/info'),
-    TW('TRX', 'tron/info'), TW('DOT', 'polkadot/info'), TW('BCH', 'bitcoincash/info'), TW('TON', 'ton/info'), TW('APT', 'aptos/info'), TW('SEI', 'sei/info'),
+    TW('TRX', 'tron/info'), TW('DOT', 'polkadot/info'), TW('BCH', 'bitcoincash/info'), TW('APT', 'aptos/info'), TW('SEI', 'sei/info'),
     TW('ARB', 'arbitrum/info'), TW('OP', 'optimism/info'),
     TW('LINK', ETHA('0x514910771AF9Ca656af840dff83E8264EcF986CA')), TW('UNI', ETHA('0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984')), TW('AAVE', ETHA('0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9')),
     TW('ENA', ETHA('0x57e114B691Db790C35207b2e685D4A43181e6061')), TW('ONDO', ETHA('0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3')), TW('WLD', ETHA('0x163f8C2467924be0ae7B5347228CABF260318753')),
