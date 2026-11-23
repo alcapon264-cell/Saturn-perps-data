@@ -145,6 +145,7 @@ export function loadConfig(env = process.env) {
       frozenMs: 10 * 60 * 1000,                          /* price unchanged for 10 min -> treated as stale */
       minMidsGapMs: 10000                                /* at most one allMids request per 10 s (weight 2; limit is 1200 weight / min / IP) */
     }),
+    recoverHours: num(env.RECOVER_HOURS, 0, { min: 0, max: 24 * 60 }),   /* r184: 0 = rebuild the whole retention window at start */
     retention: { observationsDays: num(env.RETAIN_OBS_DAYS, 35, { min: 8 }), logDays: num(env.RETAIN_LOG_DAYS, 7, { min: 1 }) },
     http: { ipLimitPerMin: num(env.HTTP_LIMIT_PER_MIN, 60, { min: 1 }), trustedProxyHops: Math.round(num(env.TRUSTED_PROXY_HOPS, 1, { min: 0, max: 5 })) },
     ws: { maxConnPerIp: num(env.WS_MAX_CONN_PER_IP, 20, { min: 1 }), maxMarkets: 3, maxMsgPerWindow: 30, windowMs: 10000, maxPayload: 1024, heartbeatMs: 25000, softBuffer: 256 * 1024, hardBuffer: 1024 * 1024 },

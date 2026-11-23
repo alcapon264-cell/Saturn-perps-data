@@ -41,7 +41,9 @@ export function createCandleEngine({ store, cfg, now = Date.now, metrics, onCand
   /* Restart recovery: rebuild every retained observation bucket, including holes before newer completed candles.
    * Complete candles remain immutable in the store; only missing and forming buckets can be written/refreshed. */
   async function recover(market) {
-    const t = now(), floor = t - cfg.retention.observationsDays * 86400000;
+    /* r184: rebuild only the last 6 h (candles older than that were finalized before the restart). Rebuilding the whole retention window
+     * for 48 markets took ~5 minutes of database writes at every start, and no market had a live price during that time. */
+    const t = now(), floor = Math.max(t - cfg.retention.observationsDays * 86400000, cfg.recoverHours > 0 ? t - cfg.recoverHours * 3600000 : -Infinity);
     const obs = await store.observations(market, floor, t + 1);
     let rebuilt = 0;
     for (const tf of TFS) {

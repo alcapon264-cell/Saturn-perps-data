@@ -60,6 +60,9 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     for (const m of (cfg.view ? cfg.view.markets : [])) { const T = VIEW_MARKET_TABLE[m]; if (!T || T.dex !== dex || !view) continue; const q = view.Q[m]; const coin = q && q.coin || T.venueCoins.find(c => mids[c] != null);
       const p = coin ? Number(mids[coin]) : NaN; if (p > 0 && Number.isFinite(p) && inRange(p, T.range)) liveLast.set(m, { price: p, at }); }
   });
+  /* r184 diagnostics: every 5 min, what the Hyperliquid socket really delivers (connections, contexts) — visible in Render logs */
+  const diagTimer = hlWs ? setIntervalImpl(() => { try { log('hl-ws stats ' + JSON.stringify(hlWs.stats().map(c => [c.dex, c.open ? 1 : 0, c.ctx, c.midsAgeMs == null ? null : Math.round(c.midsAgeMs / 1000), c.lastErr ? String(c.lastErr).slice(0, 40) : null])) + ' ctxOk=' + (view ? view.KEYS.filter(m => view.Q[m] && view.Q[m].ctx && now() - view.Q[m].ctx.at < 180000).length : 0) + '/' + (view ? view.KEYS.length : 0)); } catch {} }, 300000) : null;
+  if (diagTimer && diagTimer.unref) diagTimer.unref();
   const liveTimer = hlWs ? setIntervalImpl(() => { const t = now();
     for (const [m, x] of liveLast) { if (t - x.at > 5000) continue; const s = liveSent.get(m); if (s && s.price === x.price) continue;
       if (view && view.isViewMarket(m)) { try { if (!view.quality(m, view.Q[m], view.recorder.summary()).ok) continue; } catch { continue; } }
