@@ -40,7 +40,13 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     extraMarkets: () => view ? view.visibleKeys() : [], sourceFor: m => view && view.isViewMarket(m) ? VIEW_SOURCE : SOURCE });
   /* r144: Hyperliquid WebSocket feed for the view markets (replaces REST polling that Hyperliquid answers with 429 from Render's shared IP) */
   const hlWs = WebSocketClient && cfg.view && cfg.view.markets.length && process.env.HL_WS !== '0' ? createHlWsFeed({ WebSocketImpl: WebSocketClient, ...(hlWsUrl ? { url: hlWsUrl } : {}), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics,
-    sets: [...new Set(cfg.view.markets.map(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex).filter(d => d != null))].map(dex => ({ dex, coins: cfg.view.markets.filter(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex === dex).flatMap(m => VIEW_MARKET_TABLE[m].venueCoins) })) }) : null;
+    sets: [...new Set(cfg.view.markets.map(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex).filter(d => d != null))].flatMap(dex => {
+      /* r183: Hyperliquid streamed contexts (oracle, 24 h change, volume) for only the first ~10 coins of one connection, so every market after
+       * that had no price check, no change and no volume. Coins are now spread over several connections of at most 8 each; only the first
+       * connection of a market set also carries allMids (the big all-prices message), so the extra connections cost almost nothing. */
+      const coins = cfg.view.markets.filter(m => VIEW_MARKET_TABLE[m] && VIEW_MARKET_TABLE[m].dex === dex).flatMap(m => VIEW_MARKET_TABLE[m].venueCoins), out = [];
+      for (let i = 0; i < coins.length; i += 8) out.push({ dex, coins: coins.slice(i, i + 8), mids: i === 0 });
+      return out; }) }) : null;
   /* r144.3 LIVE PRICES: Hyperliquid's socket pushes every coin's mid price several times a second. The latest one per market is published to the
      app's Perps socket at most once a second (and only when it changed), and /v1/pm/px serves the Up/Down coins. The 15 s recorded samples and
      candles are unchanged; while the live feed is fresh the hub shows the live price instead of the slower sample. Display only — trading

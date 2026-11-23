@@ -17,7 +17,7 @@ export function createHlWsFeed({ WebSocketImpl, url = HL_WS_URL, sets = [], now 
   if (url !== HL_WS_URL && !/^ws:\/\/127\.0\.0\.1:\d+\/ws$/.test(url)) throw new Error('hl_ws_url_not_allowed');
   const inc = n => { try { metrics?.inc(n); } catch {} };
   /* sets: [{dex:'', coins:['HYPE',...]}, {dex:'xyz', coins:['xyz:SNDK',...]}] */
-  const C = sets.map(s => ({ dex: s.dex || '', coins: [...new Set(s.coins || [])].filter(c => COIN.test(c)), ws: null, open: false, retry: 1000, rt: null, lastMsg: 0,
+  const C = sets.map(s => ({ dex: s.dex || '', wantMids: s.mids !== false, coins: [...new Set(s.coins || [])].filter(c => COIN.test(c)), ws: null, open: false, retry: 1000, rt: null, lastMsg: 0,
     mids: null, midsAt: 0, ctx: new Map(), opens: 0, msgs: 0, lastErr: null }));
   let running = false, hb = null; const listeners = new Set();
 
@@ -29,7 +29,7 @@ export function createHlWsFeed({ WebSocketImpl, url = HL_WS_URL, sets = [], now 
     on('open', () => {
       if (c.ws !== ws) return; c.open = true; c.opens++; c.lastMsg = now(); c.retry = 1000; inc('hl_ws_open');
       const send = sub => { try { ws.send(JSON.stringify({ method: 'subscribe', subscription: sub })); } catch {} };
-      send(c.dex ? { type: 'allMids', dex: c.dex } : { type: 'allMids' });
+      if (c.wantMids) send(c.dex ? { type: 'allMids', dex: c.dex } : { type: 'allMids' });
       for (const coin of c.coins) send({ type: 'activeAssetCtx', coin });
     });
     on('message', ev => { if (c.ws !== ws) return; c.lastMsg = now(); c.msgs++; handle(c, typeof ev === 'object' && ev && 'data' in ev && !(ev instanceof Uint8Array) ? ev.data : ev); });
@@ -68,7 +68,7 @@ export function createHlWsFeed({ WebSocketImpl, url = HL_WS_URL, sets = [], now 
     start() { if (running || !C.length || !WebSocketImpl) return; running = true; for (const c of C) connect(c); hb = setIntervalImpl(beat, pingMs); if (hb && hb.unref) hb.unref(); log('hl-ws: started', C.map(c => (c.dex || 'main') + '(' + c.coins.length + ')').join(' ')); },
     stop() { running = false; if (hb) clearIntervalImpl(hb); hb = null; for (const c of C) { if (c.rt) clearTimeoutImpl(c.rt); c.rt = null; const ws = c.ws; c.ws = null; c.open = false; try { ws && ws.close(); } catch {} } },
     /* mids of one market set, or null; `at` = when the last allMids message arrived */
-    mids(dex = '') { const c = C.find(x => x.dex === dex); return c && c.mids ? { mids: c.mids, at: c.midsAt } : null; },
+    mids(dex = '') { const c = C.find(x => x.dex === dex && x.wantMids); return c && c.mids ? { mids: c.mids, at: c.midsAt } : null; },
     /* r144.3: called on every allMids push (dex, mids, at) — used for the 1 s live price ticks */
     onMids(f) { listeners.add(f); return () => listeners.delete(f); },
     ctx(coin) { for (const c of C) { const v = c.ctx.get(coin); if (v) return v; } return null; },
