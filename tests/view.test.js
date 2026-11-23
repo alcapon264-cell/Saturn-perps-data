@@ -71,15 +71,16 @@ async function boot({ env = {}, markets = ALL.join(','), key = CG_KEY, before } 
 const slot = async e => { await e.clock.advance(15000); await e.app.idle(); };
 
 test('config: unknown VIEW_MARKETS entries are reported, the Hyperliquid base and market sets are pinned, the table is never executable', async () => {
-  const c = loadConfig({ DATABASE_URL: 'x', VIEW_MARKETS: 'HYPE,DOGE,SNDK', COINGECKO_DEMO_KEY: CG_KEY });
-  assert.deepEqual([...c.view.markets], ['HYPE', 'SNDK']); assert.ok(validateConfig(c).some(x => /DOGE/.test(x)));
+  const c = loadConfig({ DATABASE_URL: 'x', VIEW_MARKETS: 'HYPE,NOTACOIN,SNDK', COINGECKO_DEMO_KEY: CG_KEY });
+  assert.deepEqual([...c.view.markets], ['HYPE', 'SNDK']); assert.ok(validateConfig(c).some(x => /NOTACOIN/.test(x)));
   assert.ok(validateConfig(loadConfig({ DATABASE_URL: 'x', VIEW_MARKETS: 'HYPE', HYPERLIQUID_INFO_BASE: 'https://evil.example' })).some(x => /HYPERLIQUID_INFO_BASE/.test(x)));
   assert.throws(() => createHyperliquidClient({ base: 'https://evil.example' })); assert.throws(() => createCoinGeckoClient({ base: 'https://evil.example', key: 'k' })); assert.doesNotThrow(() => createCoinGeckoClient({ key: '' }), 'r125: the key is optional (public endpoint)');
-  assert.deepEqual([...loadConfig({ DATABASE_URL: 'x' }).view.markets], ['HYPE', 'ZEC', 'JUP', 'SNDK', 'SPCX', 'NEAR', 'SKHYNIX', 'BNB'], 'r125: VIEW_MARKETS unset -> all eight (no Render setting needed)');
+  assert.deepEqual([...loadConfig({ DATABASE_URL: 'x' }).view.markets].slice(0, 8), ['HYPE', 'ZEC', 'JUP', 'SNDK', 'SPCX', 'NEAR', 'SKHYNIX', 'BNB'], 'r125: VIEW_MARKETS unset -> all of the table (no Render setting needed)');
+  assert.ok(loadConfig({ DATABASE_URL: 'x' }).view.markets.includes('DOGE'), 'r179: new markets are on by default');
   assert.deepEqual([...loadConfig({ DATABASE_URL: 'x', VIEW_MARKETS: 'off' }).view.markets], [], 'VIEW_MARKETS=off -> none');
   await assert.rejects(createHyperliquidClient({ fetchImpl: async () => J({}) }).allMids('evil'), /dex_not_allowed/, 'only the main and xyz market sets can be requested');
   for (const k of Object.keys(VIEW_MARKET_TABLE)) assert.ok(!(k in MARKETS), k + ' is not an executable market');
-  assert.deepEqual(Object.keys(VIEW_MARKET_TABLE).filter(k => VIEW_MARKET_TABLE[k].category === 'stock').sort(), ['SKHYNIX', 'SNDK', 'SPCX']);
+  assert.ok(['SKHYNIX', 'SNDK', 'SPCX'].every(k => VIEW_MARKET_TABLE[k].category === 'stock') && Object.values(VIEW_MARKET_TABLE).every(d => d.category !== 'stock' || d.dex === 'xyz'), 'stocks are Trade.xyz markets');
   assert.ok(logoUrlAllowed('https://coin-images.coingecko.com/x.png')); assert.ok(!logoUrlAllowed('http://coin-images.coingecko.com/x.png')); assert.ok(!logoUrlAllowed('https://evil.example/x.png'));
 });
 
@@ -163,7 +164,7 @@ test('honest status: a coin missing or delisted on Hyperliquid, or a wrong CoinG
 });
 
 test('r125 without a CoinGecko key (today\'s Render config): all 8 markets are listed AND priced; crypto checked against the Hyperliquid oracle; identity + logos from the public CoinGecko endpoint, no key sent', opts, async () => {
-  const e = await boot({ key: '', env: { VIEW_MARKETS: '' } }); try {
+  const e = await boot({ key: '', env: { VIEW_MARKETS: ALL.join(',') } }); try {
     await slot(e);
     const by = Object.fromEntries((await e.view.marketsView()).map(x => [x.market, x]));
     assert.deepEqual(Object.keys(by), ALL);

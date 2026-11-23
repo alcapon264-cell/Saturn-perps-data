@@ -116,8 +116,9 @@ test('prepare (execution enabled in TEST only): strict schema, size/type limits,
     let tx = buildTx({ wallet: W.pub });
     e.g.script['/v1/positions/increase'] = () => J(200, { serializedTxBase64: b64(tx.unsigned), positionPubkey: tx.position, quote: { sizeUsdDelta: '125000000', leverage: '5', evil: { x: 1 } }, txMetadata: { blockhash: 'x', transactionFeeLamports: '5000' } });
     const P = '/v1/perps/jup/positions/increase';
-    for (const b of [incBody(W.pub, { extra: 1 }), incBody(W.pub, { leverage: '500' }), incBody(W.pub, { inputTokenAmount: '-1' }), incBody(W.pub, { asset: 'DOGE' }), incBody('nope'), incBody(W.pub, { maxSlippageBps: '9999' })])
+    for (const b of [incBody(W.pub, { extra: 1 }), incBody(W.pub, { leverage: '500' }), incBody(W.pub, { inputTokenAmount: '-1' }), incBody(W.pub, { asset: 'QQQZ' }), incBody('nope'), incBody(W.pub, { maxSlippageBps: '9999' })])
       assert.equal((await e.post(P, b)).status, 400, JSON.stringify(b));
+    assert.equal((await e.post(P, incBody(W.pub, { asset: 'DOGE' }))).status, 403, 'r179: a view-only market can never reach Jupiter execution');
     assert.equal((await e.post(P, JSON.stringify(incBody()), { 'content-type': 'text/plain' })).status, 415);
     assert.equal((await e.post(P, JSON.stringify({ ...incBody(), pad: 'x'.repeat(9000) }))).status, 413);
     assert.equal(e.g.calls.length, 0, 'invalid requests never reach Jupiter');

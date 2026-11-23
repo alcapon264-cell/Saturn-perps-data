@@ -25,7 +25,7 @@ const markets = async e => { const port = e._port || (e._port = await e.app.star
 const count = async (e, table, m) => (await e.db.rows(`SELECT count(*)::int n FROM ${table} WHERE market='${m}'`))[0].n;
 
 test('registry: 11 markets, identity/provider/venue/eligibility fixed in code; only SOL/ETH/BTC executable; JUP the token is a Hyperliquid view market, not Jupiter Perps', () => {
-  assert.deepEqual(Object.keys(REGISTRY), ALL11);
+  assert.deepEqual(Object.keys(REGISTRY).slice(0, 11), ALL11);   /* r179: more view markets follow the original eleven */
   for (const k of ['SOL', 'ETH', 'BTC']) assert.deepEqual([REGISTRY[k].provider, REGISTRY[k].venue, REGISTRY[k].executable, REGISTRY[k].viewOnly], ['jupiter-perps', 'jupiter-perps', true, false], k);
   for (const k of VIEW) { assert.equal(REGISTRY[k].provider, 'hyperliquid', k); assert.equal(REGISTRY[k].executable, false, k); assert.equal(REGISTRY[k].viewOnly, true, k); assert.equal(REGISTRY[k].priceKind, 'hyperliquid_perp_mid'); }
   assert.deepEqual(['SNDK', 'SPCX', 'SKHYNIX'].map(k => REGISTRY[k].venue), ['hyperliquid:xyz', 'hyperliquid:xyz', 'hyperliquid:xyz'], 'stocks: perp prices on Trade.xyz, not stock reference prices');

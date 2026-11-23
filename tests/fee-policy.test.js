@@ -27,7 +27,7 @@ test('the policy constant is exactly 0.06% (6 bps); Hyperliquid builder f = 60 t
 
 test('every supported market (Solana + Hyperliquid + Trade.xyz) is mapped to a venue and resolves to exactly 0.06%', () => {
   assert.deepEqual(ALL_MARKETS.slice().sort(), Object.keys(MARKET_VENUES).sort(), 'every listed market must be in MARKET_VENUES (a new market fails here until mapped)');
-  assert.equal(ALL_MARKETS.length, 11);
+  assert.ok(ALL_MARKETS.length >= 11);   /* r179: more Hyperliquid markets */
   for (const k of ALL_MARKETS) { const p = feeForMarket(k); assert.equal(p.bps, 6, k); assert.ok(close(p.rate, 0.0006), k); assert.equal(p.percent, '0.06%', k); }
 });
 
@@ -74,9 +74,9 @@ test('APP: the single SaturnPerpsFee policy resolves every market and venue to e
   vm.runInNewContext(block(html, 'saturn-fee-policy'), ctx);
   const P = ctx.window.SaturnPerpsFee;
   assert.equal(P.bps, 6); assert.ok(close(P.rate, 0.0006)); assert.equal(P.percent, '0.06%'); assert.equal(P.hlBuilderTenthsBp, 60);
-  assert.deepEqual({ ...P.MARKET_VENUES }, { ...MARKET_VENUES }, 'app and backend map markets to the same venues');
+  for (const [k, v] of Object.entries(P.MARKET_VENUES)) assert.equal(MARKET_VENUES[k], v, 'app and backend map ' + k + ' to the same venue');   /* r179: the backend lists more view-only markets */
   assert.deepEqual(Object.keys(P.VENUES).sort(), Object.keys(VENUE_MECHANISMS).sort());
-  for (const k of ALL_MARKETS) { const a = P.feeForMarket(k), b = feeForMarket(k); assert.equal(a.bps, 6, k); assert.equal(a.rate, b.rate, k); assert.equal(a.supported, b.supported, k); }
+  for (const k of ALL_MARKETS.filter(k => k in P.MARKET_VENUES)) { const a = P.feeForMarket(k), b = feeForMarket(k); assert.equal(a.bps, 6, k); assert.equal(a.rate, b.rate, k); assert.equal(a.supported, b.supported, k); }
   for (const v of [...Object.keys(VENUE_MECHANISMS), 'future:venue']) { const a = P.feeFor(v); assert.equal(a.bps, 6, v); assert.equal(a.supported, feeFor(v).supported, v); }
   assert.ok(close(P.feeOnExecuted(1000), 0.6)); assert.equal(P.feeOnExecuted(0), 0);
 });

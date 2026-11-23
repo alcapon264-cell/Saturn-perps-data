@@ -97,7 +97,7 @@ test('config + mainnet market discovery (asset ids incl. HIP-3 xyz = 100000 + 2*
   assert.equal(by.SNDK.asset, 120001); assert.equal(by.SNDK.venue, 'hyperliquid:xyz'); assert.equal(by.SNDK.onlyIsolated, true);
   assert.equal(by.SPCX.asset, 120002); assert.equal(by.SKHYNIX.asset, 120003);
   assert.equal(by.HYPE.verified, true); assert.equal(by.ZEC.verified, false);
-  assert.ok(mk.markets.every(m => m.listed && m.collateral === 'USDC'));
+  assert.ok(mk.markets.filter(m => ['HYPE','ZEC','JUP','NEAR','BNB','SNDK','SPCX','SKHYNIX'].includes(m.market)).every(m => m.listed && m.collateral === 'USDC'));   /* r179: coins the venue does not list stay unlisted */
 });
 
 test('agent-signed IOC order on a verified market: recovered, checked, recorded, forwarded once; replay returns the stored result', opts, async t => {

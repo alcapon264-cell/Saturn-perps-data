@@ -155,7 +155,7 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     for (const m of CK) {
       const d = T(m), row = r.rows.get(d.coingeckoId), q = Q[m];
       if (!row) { q.idOk = false; q.idReason = 'coingecko_id_not_found'; continue; }
-      if (row.symbol !== d.cgSymbol || row.name !== d.cgName) { q.idOk = false; q.idReason = 'coingecko_id_mismatch'; metrics?.inc('view_id_mismatch'); continue; }
+      if (row.symbol !== d.cgSymbol || (d.cgName != null && row.name !== d.cgName)) { q.idOk = false; q.idReason = 'coingecko_id_mismatch'; metrics?.inc('view_id_mismatch'); log('view: CoinGecko id mismatch', m, String(row.symbol).slice(0, 20), String(row.name).slice(0, 40)); continue; }
       q.idOk = true; q.idReason = null;
       if (logoUrlAllowed(row.image)) q.logoUrl = row.image;
       if (!keyed) continue;   /* public endpoint: identity + logo only; the price check is the oracle check */
