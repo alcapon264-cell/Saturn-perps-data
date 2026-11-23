@@ -100,3 +100,19 @@ test('r199 discover feed: New = created / fresh-curve tokens of the last minute;
   t0 += 61000; assert.ok(!T.feed('new').some(x => x.mint === NEW), 'after a minute it is no longer new');
   cl.close(); T.stop(); cs.close(); await pa.close();
 });
+
+test('r200 launches are pushed to New-tab clients the moment they happen; a New-tab client alone keeps the stream open', async () => {
+  const pa = await upstream();
+  const T = createTokLive({ WebSocketImpl: WebSocket, urls: { pumpapi: pa.url }, upstreams: ['pumpapi'], statsMs: 3600000, record: true });
+  T.start(); const metaSeen = []; T.onNew(t => metaSeen.push(...t.map(x => x.mint)));
+  const cs = new WebSocketServer({ host: '127.0.0.1', port: 0 }); await new Promise(r => cs.on('listening', r)); cs.on('connection', ws => T.attach(ws, {}));
+  const cl = new WebSocket('ws://127.0.0.1:' + cs.address().port); const got = []; cl.on('message', d => got.push(JSON.parse(String(d))));
+  await new Promise(r => cl.on('open', r)); cl.send(JSON.stringify({ type: 'sub', mints: [], newFeed: true }));
+  assert.ok(await until(() => pa.conns.length === 1), 'the New tab alone opens the upstream');
+  assert.ok(await until(() => got.some(m => m.type === 'newtoks')), 'snapshot first');
+  const NEW = id('Pushc'); pa.send({ mint: NEW, action: 'create', txSigner: W1, signature: SIG('pc'), name: 'Pushy', symbol: 'PSH', marketCapSol: 28, marketCapUsd: 3900, priceUsd: 0.0000039 });
+  assert.ok(await until(() => got.some(m => m.type === 'newtok' && m.tokens.some(x => x.mint === NEW))), 'pushed');
+  assert.deepEqual(metaSeen, [NEW], 'picture lookup hook called');
+  T.pushMeta([{ mint: NEW, image: 'https://x.example/a.png' }]); assert.ok(await until(() => got.some(m => m.type === 'newmeta')));
+  cl.close(); T.stop(); cs.close(); await pa.close();
+});

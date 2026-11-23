@@ -104,7 +104,8 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     const t = now(), mi = Math.floor(t / 60000), sol = Number((SOLV_RX.exec(s) || [])[1]) || 0, mcu = Number((A_RX.mcu.exec(s) || [])[1]) || 0, mcs = Number((A_RX.mcs.exec(s) || [])[1]) || 0, pu = Number((A_RX.pu.exec(s) || [])[1]) || 0;
     let r = ACT.get(mint);
     if (!r) { if (ACT.size >= ACT_CAP) { let oldK = null, oldT = Infinity; let n = 0; for (const [k, v] of ACT) { if (v.last < oldT) { oldT = v.last; oldK = k; } if (++n > 400) break; } if (oldK) ACT.delete(oldK); }
-      r = { first: t, firstMcSol: mcs || null, created: a === 'create', last: t, mcu: 0, mcs: 0, pu: 0, b: [] }; ACT.set(own(mint), r); }
+      r = { first: t, firstMcSol: mcs || null, created: a === 'create', last: t, mcu: 0, mcs: 0, pu: 0, b: [] }; ACT.set(own(mint), r);
+      if (a === 'create' || (t - startedAt > 90000 && mcs > 0 && mcs < 45)) { r.mcu = mcu || 0; r.mcs = mcs || 0; r.pu = pu || 0; queueNew(mint, r); } }
     if (a === 'create') r.created = true;
     r.last = t; if (mcu > 0) r.mcu = mcu; if (mcs > 0) r.mcs = mcs; if (pu > 0) r.pu = pu;
     if (a === 'create') return;
@@ -112,6 +113,14 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     if (a === 'buy') { b.nb++; b.sb += sol; } else { b.ns++; b.ss += sol; }
     if (b.w.size < 300) { const w = (A_RX.tr.exec(s) || [])[1]; if (w) b.w.add(w); }
   }
+  /* r200: launches are pushed to New-tab clients as they happen (coalesced every 250 ms so a burst is one message) */
+  const NEWQ = new Map(), newHooks = new Set(); let newT = null;
+  function queueNew(mint, r) { NEWQ.set(mint, r); if (!newT) newT = setTimeoutImpl(flushNew, 250); }
+  function flushNew() { newT = null; if (!NEWQ.size) return; const toks = [...NEWQ].map(([k, r]) => actView(k, r, 2)); NEWQ.clear();
+    const msg = JSON.stringify({ type: 'newtok', tokens: toks });
+    for (const [ws, c] of clients) { if (!c.newFeed || ws.readyState !== 1 || (ws.bufferedAmount || 0) > 256 * 1024) continue; try { ws.send(msg); sent++; } catch {} }
+    for (const f of newHooks) { try { f(toks); } catch {} } }
+  function pushMeta(list) { const msg = JSON.stringify({ type: 'newmeta', tokens: list }); for (const [ws, c] of clients) { if (!c.newFeed || ws.readyState !== 1) continue; try { ws.send(msg); } catch {} } }
   function actView(mint, r, mins) {
     const t = now(), from = Math.floor(t / 60000) - mins + 1, B = r.b.filter(x => x.m >= from), w = new Set(); let nb = 0, ns = 0, sb = 0, ss = 0;
     for (const x of B) { nb += x.nb; ns += x.ns; sb += x.sb; ss += x.ss; for (const k of x.w) w.add(k); }
@@ -219,7 +228,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
         try { ws.send(JSON.stringify({ type: 'tok', ...x })); c.sent++; sent++; } catch {} }
     }
   }
-  const watching = () => ref.size > 0 || wref.size > 0 || [...clients.values()].some(c => c.bigMin > 0);
+  const watching = () => ref.size > 0 || wref.size > 0 || [...clients.values()].some(c => c.bigMin > 0 || c.newFeed);
   function reconcile() {
     for (const u of U) { if (watching()) { if (!u.ws && !u.rt) connect(u); else if (u.kind === 'pumpportal') syncPortal(u); } }
     /* nobody watching for a while -> upstreams close (they reopen on the next subscription) */
@@ -247,7 +256,9 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
       let m; try { m = JSON.parse(typeof raw === 'string' ? raw : Buffer.from(raw && raw.data !== undefined ? raw.data : raw).toString('utf8')); } catch { return; }
       if (!m || typeof m !== 'object') return;
       if (m.type === 'ping') { try { ws.send('{"type":"pong"}'); } catch {} return; }
-      if (m.type === 'sub' && Array.isArray(m.mints)) { c.trades = m.trades === true; const was = c.bigMin;
+      if (m.type === 'sub' && Array.isArray(m.mints)) { c.trades = m.trades === true; const was = c.bigMin; const wasNew = c.newFeed;
+        /* r200: newFeed = every Pump.fun launch pushed the moment it happens (Discover > New) */
+        c.newFeed = m.newFeed === true; if (c.newFeed && !wasNew) { try { ws.send(JSON.stringify({ type: 'newtoks', tokens: feed('new') })); } catch {} reconcile(); }
         c.bigMin = c.trades && Number(m.bigMin) >= BIG_STORE_MIN ? Math.min(1000, Number(m.bigMin)) : 0;
         setWallets(c, Array.isArray(m.wallets) ? m.wallets : []); const before = new Set(c.mints); setMints(c, m.mints);
         /* r163: on (re)subscribe -> recent big buys at once, and the last known price of every newly watched token */
@@ -268,6 +279,6 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
       st = setIntervalImpl(() => { if (clients.size || ref.size) log('tok-live: ' + JSON.stringify(stats())); }, statsMs); if (st && st.unref) st.unref();
       log('tok-live: started ' + U.map(u => u.kind).join('+')); },
     stop() { running = false; if (hb) clearIntervalImpl(hb); if (st) clearIntervalImpl(st); if (flushT) clearTimeoutImpl(flushT); flushT = null; U.forEach(closeUp); for (const ws of clients.keys()) { try { ws.close(); } catch {} } clients.clear(); ref.clear(); },
-    attach, stats, walletTrades, meta, candles, feed, recSince: () => recSince, recording: () => record, _U: U, _flush: flush, _beat: beat
+    attach, stats, walletTrades, meta, candles, feed, onNew: f => { newHooks.add(f); return () => newHooks.delete(f); }, pushMeta, recSince: () => recSince, recording: () => record, _U: U, _flush: flush, _beat: beat
   });
 }

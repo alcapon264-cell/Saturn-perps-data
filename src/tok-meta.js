@@ -11,7 +11,7 @@ const cleanTxt = v => typeof v === 'string' ? v.replace(/[\u0000-\u001f<>]/g, ''
 const okImg = v => { if (typeof v !== 'string' || v.length > 400) return null; try { const u = new URL(v); return u.protocol === 'https:' && okHost(u.hostname) ? u.href : null; } catch { return null; } };
 const ipfsFix = v => typeof v === 'string' ? v.replace(/^ipfs:\/\//, 'https://ipfs.io/ipfs/') : v;
 
-export function createTokMeta({ fetchImpl = globalThis.fetch, now = Date.now, tok = () => null, okTtl = 6 * 3600e3, badTtl = 20 * 60e3, cap = 20000, perCall = 8 } = {}) {
+export function createTokMeta({ fetchImpl = globalThis.fetch, now = Date.now, tok = () => null, okTtl = 6 * 3600e3, badTtl = 20 * 60e3, cap = 20000, perCall = 16 } = {}) {
   const C = new Map();   /* mint -> { at, v:{name,symbol,image}|null } */
   const inflight = new Map();
   async function getJson(url) {

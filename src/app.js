@@ -230,6 +230,9 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const tokLive = WebSocketClient && process.env.TOK_LIVE !== '0' ? createTokLive({ WebSocketImpl: WebSocketClient, ...(tokLiveUrls ? { urls: tokLiveUrls } : {}),
     upstreams: String(process.env.TOK_LIVE_UPSTREAMS || 'pumpapi').split(',').map(x => x.trim()), now, setTimeoutImpl, clearTimeoutImpl, setIntervalImpl, clearIntervalImpl, log, metrics, record: process.env.TOK_RECORD !== '0' }) : null;
   tokLiveRef.v = tokLive;
+  /* r200: look up each new launch's picture right away (its metadata uri is in the launch itself) and push it to the New tab */
+  if (tokLive && tokLive.onNew) tokLive.onNew(toks => { const ms = toks.map(x => x.mint); if (!ms.length) return;
+    tokMeta.resolve(ms).then(r => { const M = r && r.meta || {}; const out = ms.filter(m => M[m] && (M[m].image || M[m].name)).map(m => ({ mint: m, name: M[m].name || null, symbol: M[m].symbol || null, image: M[m].image || null })); if (out.length) tokLive.pushMeta(out); }).catch(() => {}); });
   const tokWss = tokLive ? new WebSocketServer({ noServer: true, maxPayload: 4096 }) : null;
   const stkWss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
   const ipConns = new Map();
