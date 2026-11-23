@@ -97,7 +97,8 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
   /* r199 DISCOVER FEED (memory only, from the same stream): per token, when Saturn first saw it trade, its live market cap / price, and
    * one-minute activity buckets (buys, sells, SOL in and out, distinct traders). New = tokens first seen in the last minute on a fresh
    * bonding curve; Hot = tokens whose last 5 minutes show many distinct buyers, real buy volume and a rising market cap. */
-  const ACT = new Map(); const ACT_CAP = 6000, startedAt = now();
+  const ACT = new Map(); const ACT_CAP = 6000; let upSince = 0;   /* r201: when the Pump.fun stream last connected (0 = not connected) */
+  const warmNow = t => upSince > 0 && t - upSince > 90000;
   const A_RX = { act: /"action":"(buy|sell|create)"/, mcu: /"marketCapUsd":([0-9.eE+-]{1,30})/, mcs: /"marketCapSol":([0-9.eE+-]{1,30})/, pu: /"priceUsd":([0-9.eE+-]{1,30})/, tr: /"(?:txSigner|traderPublicKey)":"([1-9A-HJ-NP-Za-km-z]{32,44})"/ };
   function actRecord(s, mint) {
     const a = (A_RX.act.exec(s) || [])[1]; if (!a) return;
@@ -105,7 +106,7 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     let r = ACT.get(mint);
     if (!r) { if (ACT.size >= ACT_CAP) { let oldK = null, oldT = Infinity; let n = 0; for (const [k, v] of ACT) { if (v.last < oldT) { oldT = v.last; oldK = k; } if (++n > 400) break; } if (oldK) ACT.delete(oldK); }
       r = { first: t, firstMcSol: mcs || null, created: a === 'create', last: t, mcu: 0, mcs: 0, pu: 0, b: [] }; ACT.set(own(mint), r);
-      if (a === 'create' || (t - startedAt > 90000 && mcs > 0 && mcs < 45)) { r.mcu = mcu || 0; r.mcs = mcs || 0; r.pu = pu || 0; queueNew(mint, r); } }
+      if (a === 'create' || (warmNow(t) && mcs > 0 && mcs < 32)) { r.mcu = mcu || 0; r.mcs = mcs || 0; r.pu = pu || 0; queueNew(mint, r); } }
     if (a === 'create') r.created = true;
     r.last = t; if (mcu > 0) r.mcu = mcu; if (mcs > 0) r.mcs = mcs; if (pu > 0) r.pu = pu;
     if (a === 'create') return;
@@ -131,8 +132,8 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
   function feed(kind) {
     const t = now(), out = [];
     if (kind === 'new') {
-      const warm = t - startedAt > 90000;   /* right after a restart every token looks "new": only tokens seen being created count then */
-      for (const [k, r] of ACT) { if (t - r.first > 60000) continue; if (!r.created && (!warm || !(r.firstMcSol > 0 && r.firstMcSol < 45))) continue; out.push(actView(k, r, 2)); }
+      const warm = warmNow(t);   /* right after a restart every token looks "new": only tokens seen being created count then */
+      for (const [k, r] of ACT) { if (t - r.first > 60000) continue; if (!r.created && (!warm || !(r.firstMcSol > 0 && r.firstMcSol < 32))) continue; out.push(actView(k, r, 2)); }
       return out.sort((a, b) => b.born - a.born).slice(0, 40);
     }
     for (const [k, r] of ACT) {
@@ -161,9 +162,9 @@ export function createTokLive({ WebSocketImpl, upstreams = ['pumpapi', 'pumpport
     if (!running || u.ws || !watching()) return;
     let ws; try { ws = new WebSocketImpl(u.url); } catch (e) { u.lastErr = String(e && e.message || e).slice(0, 80); schedule(u); return; }
     u.ws = ws; u.open = false; u.subscribed = new Set();
-    on(ws, 'open', () => { if (u.ws !== ws) return; u.open = true; u.opens++; u.lastMsg = now(); u.retry = 1000; inc('tok_up_open'); if (u.kind === 'pumpportal') syncPortal(u); });
+    on(ws, 'open', () => { if (u.ws !== ws) return; u.open = true; if (u.kind === 'pumpapi') upSince = now(); u.opens++; u.lastMsg = now(); u.retry = 1000; inc('tok_up_open'); if (u.kind === 'pumpportal') syncPortal(u); });
     on(ws, 'message', ev => { if (u.ws !== ws) return; u.lastMsg = now(); u.msgs++; handle(u, typeof ev === 'object' && ev && 'data' in ev && !(ev instanceof Uint8Array) ? ev.data : ev); });
-    on(ws, 'close', () => { if (u.ws !== ws) return; u.ws = null; u.open = false; inc('tok_up_closed'); schedule(u); });
+    on(ws, 'close', () => { if (u.ws !== ws) return; u.ws = null; u.open = false; if (u.kind === 'pumpapi') upSince = 0; inc('tok_up_closed'); schedule(u); });
     on(ws, 'error', e => { u.lastErr = String(e && (e.message || e.type) || 'error').slice(0, 80); try { ws.close(); } catch {} });
   }
   function schedule(u) { if (!running || u.rt || !watching()) return; const w = u.retry; u.retry = Math.min(60000, u.retry * 2); u.rt = setTimeoutImpl(() => { u.rt = null; connect(u); }, w); }
