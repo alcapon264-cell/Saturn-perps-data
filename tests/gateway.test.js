@@ -254,3 +254,19 @@ test('r130 code switch approved ON: without the Render settings (PERPS_EXECUTION
     assert.equal(jup.g.calls.length, 0);
   } finally { await e.drop(); }
 });
+
+test('r188 TP/SL on open: strict schema, sides checked, forwarded to Jupiter in its field names', opts, async () => {
+  const e = await boot({ exec: true }); try {
+    const P = '/v1/perps/jup/positions/increase';
+    for (const t of [[], [{ requestType: 'tp' }], [{ requestType: 'tp', triggerPrice: '1.5' }], [{ requestType: 'xx', triggerPrice: '1' }], [{ requestType: 'tp', triggerPrice: '1', extra: 1 }],
+      [{ requestType: 'tp', triggerPrice: '2' }, { requestType: 'tp', triggerPrice: '3' }], 'tp', [{ requestType: 'tp', triggerPrice: '0' }]])
+      assert.equal((await e.post(P, incBody(W.pub, { tpsl: t }))).status, 400, JSON.stringify(t));
+    const wrong = await json(await e.post(P, incBody(W.pub, { tpsl: [{ requestType: 'tp', triggerPrice: '100000000' }, { requestType: 'sl', triggerPrice: '200000000' }] })));
+    assert.equal(wrong.status, 400); assert.equal(wrong.body.error, 'bad_tpsl');
+    const n = e.g.calls.length;
+    await e.post(P, incBody(W.pub, { tpsl: [{ requestType: 'tp', triggerPrice: '200000000' }, { requestType: 'sl', triggerPrice: '100000000' }] }));
+    const c = e.g.calls.slice(n).find(x => x.path.endsWith('/positions/increase'));
+    assert.ok(c, 'Jupiter was asked to build it');
+    assert.deepEqual(c.body.tpsl, [{ receiveToken: 'USDC', triggerPrice: '200000000', requestType: 'tp' }, { receiveToken: 'USDC', triggerPrice: '100000000', requestType: 'sl' }]);
+  } finally { await e.drop(); }
+});

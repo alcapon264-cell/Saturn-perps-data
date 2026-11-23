@@ -17,7 +17,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { MARKETS, VIEW_MARKET_TABLE } from './config.js';
 import { parseTx, msgHash, verifyEd25519, b64ToBytes, b58encode, b58decode, isPubkey } from './solana.js';
-import { inspectPerpsTx, checkAgainstRequest, mapIncrease, mapDecrease, ACTIONS, MINT, CONTRACT_BLOCKERS } from './perps-program.js';
+import { inspectPerpsTx, checkAgainstRequest, checkTpsl, mapIncrease, mapDecrease, ACTIONS, MINT, CONTRACT_BLOCKERS } from './perps-program.js';
 
 const MINT_TO_MARKET = Object.fromEntries(Object.entries(MARKETS).map(([k, v]) => [v, k]));
 /* r120: view-only markets can never be prepared, priced for trading or relayed. They are not in MARKETS / CUSTODY; this is a second, explicit lock. */
@@ -98,15 +98,16 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
   }
 
   /* ---- transactions ---- */
-  function checkBuilt(r, { kind, wallet, position, expect }) {
+  function checkBuilt(r, { kind, wallet, position, expect, tpsl = null }) {
     if (!r.ok) return { err: [r.outcome === 'http' && r.status < 500 ? 502 : 504, { ok: false, error: 'upstream_' + r.outcome, message: clean(r.json && (r.json.message || r.json.error)) || 'The transaction could not be prepared.' }] };
     const j = r.json; let t;
     try { if (typeof j.serializedTxBase64 !== 'string' || j.serializedTxBase64.length > 4096) throw 0; t = parseTx(b64ToBytes(j.serializedTxBase64)); } catch { return { err: [502, { ok: false, error: 'upstream_tx_unreadable' }] }; }
     const w = wallet || t.keys[0];
-    const ins = inspectPerpsTx(t, { wallet: w, kind });
+    const ins = inspectPerpsTx(t, { wallet: w, kind, tpsl });
     if (!ins.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ins.why, message: 'Saturn refused the prepared transaction (' + ins.why + '). Nothing was signed.' }] }; }
     if (position && ins.position !== position) return { err: [502, { ok: false, error: 'tx_refused', reason: 'position_mismatch' }] };
     if (expect) { const ck = checkAgainstRequest(ins, { kind, wallet: w, expect }, b58decode, b58encode); if (!ck.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: ck.why, message: 'Saturn refused the prepared transaction (' + ck.why + '). Nothing was signed.' }] }; } }
+    if (tpsl && tpsl.length) { const tk = checkTpsl(ins, { side: expect.side, tpsl, mint: expect.inputMint }); if (!tk.ok) { metrics?.inc('gw_tx_refused'); return { err: [502, { ok: false, error: 'tx_refused', reason: tk.why, message: 'Saturn refused the prepared transaction (' + tk.why + '). Nothing was signed.' }] }; } }
     if (kind === 'increase' && (typeof j.positionPubkey !== 'string' || j.positionPubkey !== ins.position)) return { err: [502, { ok: false, error: 'tx_refused', reason: 'position_mismatch' }] };
     if (t.sigs[0].some(x => x !== 0)) return { err: [502, { ok: false, error: 'tx_refused', reason: 'already_signed' }] };
     const quote = {}; if (j.quote && typeof j.quote === 'object') { let n = 0; for (const [k, v] of Object.entries(j.quote)) { if (++n > 40) break; if (/^[A-Za-z0-9]{1,40}$/.test(k) && scalar(v)) quote[k] = v; } }
@@ -115,7 +116,14 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
     return { ok: { serializedTxBase64: j.serializedTxBase64, positionPubkey: ins.position, quote, txMetadata: meta, saturnTicket: issueTicket(w, action, msgHash(t.msg)), ticketExpiresInSec: Math.floor(G.ticketTtlMs / 1000) } };
   }
   async function increase(b, ip) {
-    if (!onlyKeys(b, ['asset', 'side', 'inputToken', 'inputTokenAmount', 'leverage', 'maxSlippageBps', 'walletAddress'])) return [400, { ok: false, error: 'bad_request' }];
+    if (!onlyKeys(b, ['asset', 'side', 'inputToken', 'inputTokenAmount', 'leverage', 'maxSlippageBps', 'walletAddress', 'tpsl'])) return [400, { ok: false, error: 'bad_request' }];
+    /* r188 optional take profit / stop loss: at most one of each, trigger price in micro-USD; a long's TP is above its SL, a short's below */
+    if (b.tpsl !== undefined) {
+      const T = b.tpsl; if (!Array.isArray(T) || T.length < 1 || T.length > 2 || T.some(x => !onlyKeys(x, ['requestType', 'triggerPrice']) || (x.requestType !== 'tp' && x.requestType !== 'sl') || !digits(x.triggerPrice, 16) || BigInt(x.triggerPrice) <= 0n)
+        || new Set(T.map(x => x.requestType)).size !== T.length) return [400, { ok: false, error: 'bad_request' }];
+      const tp = T.find(x => x.requestType === 'tp'), sl = T.find(x => x.requestType === 'sl');
+      if (tp && sl && (b.side === 'long' ? BigInt(tp.triggerPrice) <= BigInt(sl.triggerPrice) : BigInt(tp.triggerPrice) >= BigInt(sl.triggerPrice))) return [400, { ok: false, error: 'bad_tpsl', message: 'Take profit and stop loss are on the wrong sides of each other.' }];
+    }
     const lev = Number(b.leverage), slip = Number(b.maxSlippageBps);
     if (!ASSETS.has(b.asset) || (b.side !== 'long' && b.side !== 'short') || !TOKENS.has(b.inputToken) || !digits(b.inputTokenAmount) || typeof b.leverage !== 'string' || !/^\d{1,3}(\.\d)?$/.test(b.leverage) || !(lev >= 1.1 && lev <= 100)
       || typeof b.maxSlippageBps !== 'string' || !/^\d{2,3}$/.test(b.maxSlippageBps) || !(slip >= 10 && slip <= 500) || !isPubkey(b.walletAddress)) return [400, { ok: false, error: 'bad_request' }];
@@ -123,7 +131,7 @@ export function createGateway({ cfg, store, upstream, limiter, now, metrics, get
     if (!budget()) return [503, { ok: false, error: 'upstream_busy' }];
     /* r117: Saturn's request is MAPPED to Jupiter's field names (perps-program.js mapIncrease); Saturn-internal names are never forwarded */
     const r = await upstream.increase(mapIncrease(b, { transactionType: G.transactionType }));
-    const c = checkBuilt(r, { kind: 'increase', wallet: b.walletAddress, expect: { market: b.asset, side: b.side, inputMint: MINT[b.inputToken], collateralTokenDelta: b.inputTokenAmount } }); return c.err || [200, c.ok];
+    const c = checkBuilt(r, { kind: 'increase', wallet: b.walletAddress, tpsl: b.tpsl || null, expect: { market: b.asset, side: b.side, inputMint: MINT[b.inputToken], collateralTokenDelta: b.inputTokenAmount } }); return c.err || [200, c.ok];
   }
   async function decrease(b, ip) {
     if (!onlyKeys(b, ['positionPubkey', 'receiveToken', 'entirePosition', 'sizeUsdDelta', 'collateralUsdDelta', 'maxSlippageBps'])) return [400, { ok: false, error: 'bad_request' }];
