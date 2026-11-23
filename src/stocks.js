@@ -72,7 +72,9 @@ export function createStocks({ fetchImpl = globalThis.fetch, jupBase = TOKENS_BA
     if (!cand.size) throw new Error('no_candidates');
     const headers = keyHeader && key ? { [keyHeader]: key } : {};
     const ms = [...new Set([...cand.values()].map(c => c.mint))];
-    const arr = await getJson(ju.href.replace(/\/$/, '') + '/search?query=' + encodeURIComponent(ms.join(',')), headers);
+    /* r182: the Jupiter key is shared with token pictures, so a 429 here is common right after a restart: retry a few times before giving up */
+    let arr = null;
+    for (let i = 0; i < 4 && arr == null; i++) { try { arr = await getJson(ju.href.replace(/\/$/, '') + '/search?query=' + encodeURIComponent(ms.join(',')), headers); } catch (e) { if (i === 3 || !(e && e.status === 429)) throw e; await sleep(4000 * (i + 1)); } }
     const vs = (Array.isArray(arr) ? arr : []).filter(x => x && x.isVerified === true && typeof x.id === 'string'), ok = new Set(vs.map(x => x.id));
     for (const x of vs) if (iconOk(x.icon)) icons.set(x.id, x.icon);
     const next = new Map([...mints].filter(([t, v]) => SEED[t] === v.mint));
@@ -83,7 +85,7 @@ export function createStocks({ fetchImpl = globalThis.fetch, jupBase = TOKENS_BA
   }
   function kickDiscover() {
     if (discBusy || now() < discNext || (discAt && now() - discAt < discoverMs)) return discBusy;
-    discBusy = discover().catch(e => { err = e && e.message; discNext = now() + (e && e.status === 429 ? 10 * 60e3 : 3 * 60e3); log('stocks_discover_failed', err); })
+    discBusy = discover().catch(e => { err = e && e.message; discNext = now() + (e && e.status === 429 ? 2 * 60e3 : 3 * 60e3); log('stocks_discover_failed', err); })
       .finally(() => { discBusy = null; });
     return discBusy;
   }
