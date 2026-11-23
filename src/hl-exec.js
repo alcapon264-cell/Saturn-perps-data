@@ -65,12 +65,20 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
   async function info(body, ms = 8000) {
     if (limiter('hl|upstream', C.upstreamPerMin)) throw refuse(503, 'upstream_busy', 'Saturn is at its Hyperliquid request budget. Try again in a minute.');
     const ac = new AbortController(), t = setTimeout(() => ac.abort(), ms);
-    try { const r = await fetchImpl(api + '/info', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal });
-      if (!r.ok) throw new Error('http_' + r.status); return await r.json(); }
+    try {
+      /* r193: Hyperliquid answers Render's shared IP with 429 now and then: one short retry before giving up */
+      for (let i = 0; ; i++) { const r = await fetchImpl(api + '/info', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ac.signal });
+        if (r.status === 429 && i === 0) { await new Promise(res => setTimeout(res, 700)); continue; }
+        if (!r.ok) throw new Error('http_' + r.status); return await r.json(); } }
     finally { clearTimeout(t) }
   }
   const cache = new Map();
-  async function cached(key, ttl, fn) { const c = cache.get(key); if (c && now() - c.at < ttl) return c.v; const v = await fn(); cache.set(key, { at: now(), v }); if (cache.size > 2000) cache.delete(cache.keys().next().value); return v; }
+  /* r193: a failed refresh serves the last good answer for up to staleMs (marked stale) instead of failing the screen */
+  const lastErrLog = new Map();
+  async function cached(key, ttl, fn, staleMs = 0) { const c = cache.get(key); if (c && now() - c.at < ttl) return c.v; let v;
+    try { v = await fn(); } catch (e) { const k = key.split('|')[0], t = now(); if (!lastErrLog.has(k) || t - lastErrLog.get(k) > 60000) { lastErrLog.set(k, t); log('hl_read_failed', { what: k, err: String(e && e.message || e).slice(0, 80) }); }
+      if (c && staleMs && t - c.at < staleMs) return c.v && typeof c.v === 'object' && !Array.isArray(c.v) ? { ...c.v, stale: true } : c.v; throw e; }
+    cache.set(key, { at: now(), v }); if (cache.size > 2000) cache.delete(cache.keys().next().value); return v; }
 
   /* market discovery: the 8 markets, resolved against Hyperliquid mainnet metadata (asset id = index, or 100000 + dexIndex*10000 + index for HIP-3) */
   async function markets() {
@@ -98,7 +106,7 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
         out.push(row);
       }
       return out;
-    });
+    }, 15 * 60000);   /* r193: stale market list kept up to 15 min */
   }
   const byAsset = async a => (await markets()).find(m => m.listed && m.asset === a) || null;
   async function mid(m) { const r = await cached('mids|' + m.dex, 3000, () => info(m.dex ? { type: 'allMids', dex: m.dex } : { type: 'allMids' })); const p = r && Number(r[m.coin]); return p > 0 ? p : null; }
@@ -347,7 +355,7 @@ export function createHlGateway({ cfg, store, limiter, now = Date.now, fetchImpl
         pending: { usd: pending, transfers: fund.filter(x => x.state === 'pending').map(x => ({ txHash: x.tx_hash, amount: x.amount })) },
         available: +(venueDirect + venueMove + walletUsable).toFixed(6),
         note: 'available = venue collateral usable now + Hyperliquid balance movable to this venue + Saturn Wallet USDC on Arbitrum (>=5, with gas). Pending transfers, open-order holds and position margin are excluded.' };
-    });
+    }, 90000);   /* r193: last good balance kept up to 90 s */
   }
   async function registerFunding(req, ip) {
     if (!C.enabled) return [403, { ok: false, error: 'execution_disabled', message: 'Real-money Hyperliquid trading is not activated in Saturn yet.' }];
