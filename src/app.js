@@ -65,12 +65,12 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   const VIEW_LOGO = Object.freeze(Object.fromEntries([
     TW('DOGE', 'doge/info'), TW('XRP', 'ripple/info'), TW('SUI', 'sui/info'), TW('AVAX', 'avalanchec/info'), TW('LTC', 'litecoin/info'), TW('ADA', 'cardano/info'),
     TW('TRX', 'tron/info'), TW('DOT', 'polkadot/info'), TW('BCH', 'bitcoincash/info'), TW('TON', 'ton/info'), TW('APT', 'aptos/info'), TW('SEI', 'sei/info'),
-    TW('TIA', 'celestia/info'), TW('INJ', 'injective/info'), TW('ARB', 'arbitrum/info'), TW('OP', 'optimism/info'),
+    TW('ARB', 'arbitrum/info'), TW('OP', 'optimism/info'),
     TW('LINK', ETHA('0x514910771AF9Ca656af840dff83E8264EcF986CA')), TW('UNI', ETHA('0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984')), TW('AAVE', ETHA('0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9')),
     TW('ENA', ETHA('0x57e114B691Db790C35207b2e685D4A43181e6061')), TW('ONDO', ETHA('0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3')), TW('WLD', ETHA('0x163f8C2467924be0ae7B5347228CABF260318753')),
     ['WIF', { mint: 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm' }], ['TRUMP', { mint: '6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN' }],
     ['PENGU', { mint: '2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv' }], ['FARTCOIN', { mint: '9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump' }],
-    ['PUMP', { mint: 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn' }],
+    ['PUMP', { mint: 'pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn' }], ['TIA', { cr: 'celestia/images/celestia.png' }], ['INJ', { cr: 'injective/images/inj.png' }],
     ...['TSLA', 'NVDA', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'COIN', 'HOOD', 'PLTR', 'MSTR', 'AMD', 'NFLX'].map(k => [k, { stock: k }])
   ]));
   const ICON_MINTS = [...MARKET_KEYS.map(k => MARKETS[k]), ...Object.values(VIEW_LOGO).filter(f => f.mint).map(f => f.mint)];
@@ -79,6 +79,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
     viewIconFallback: m => { const f = VIEW_LOGO[m]; if (!f) return null;
       if (f.mint) return icons.get(ICON_MINTS).get(f.mint) || null;
       if (f.tw) return 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/' + f.tw + '/logo.png';
+      if (f.cr) return 'https://raw.githubusercontent.com/cosmos/chain-registry/master/' + f.cr;
       if (f.stock) return stocksRef.v ? stocksRef.v.iconFor(f.stock) : null;
       return null; } });
   async function viewSnapshot(m) { const rows = await view.marketsView(); const r = rows.find(x => x.market === m); return r ? { market: m, price: r.price, observedAt: r.observedAt, ageMs: r.ageMs, state: r.state } : null; }
@@ -140,7 +141,7 @@ export function createApp({ cfg, db, readerDb = null, fetchImpl = globalThis.fet
   /* r120: each market's official token icon (Jupiter Tokens API V2, server-side, cached). null when the token has none. */
   const icons = createTokenIcons({ fetchImpl: iconFetchImpl, now, keyHeader: cfg.jupiterKeyHeader, key: cfg.jupiterKey, log });
   /* r120 final: every logo is served from this service's own cache (/v1/perps/logos/<KEY>); the app never loads a third-party image URL */
-  const marketsView = async () => { icons.get(MARKET_KEYS.map(m => MARKETS[m])); return Promise.all(MARKET_KEYS.map(async m => ({ icon: (await view.coreLogoUrl(m).catch(() => null)) ? '/v1/perps/logos/' + m : null, ...(await marketView(m)), symbol: m + '-PERP', mint: MARKETS[m], name: (MARKET_META[m] || {}).name || null, category: (MARKET_META[m] || {}).category || null, maxLeverage: (MARKET_META[m] || {}).maxLeverage || null, executable: !!CUSTODY[m], stats24h: await stats24h(m), volume24h: null, openInterest: null }))); };
+  const marketsView = async () => { icons.get(ICON_MINTS);   /* r181: one icon set everywhere, so the view-market mints load too */ return Promise.all(MARKET_KEYS.map(async m => ({ icon: (await view.coreLogoUrl(m).catch(() => null)) ? '/v1/perps/logos/' + m : null, ...(await marketView(m)), symbol: m + '-PERP', mint: MARKETS[m], name: (MARKET_META[m] || {}).name || null, category: (MARKET_META[m] || {}).category || null, maxLeverage: (MARKET_META[m] || {}).maxLeverage || null, executable: !!CUSTODY[m], stats24h: await stats24h(m), volume24h: null, openInterest: null }))); };
 
   const limiter = createLimiter({ now });
   /* Perps gateway: positions via Jupiter, live price from this service's own recorder, execution routes off unless explicitly enabled. Writes (idempotency rows) use the primary role. */

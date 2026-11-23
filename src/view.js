@@ -325,7 +325,10 @@ export function createViewMarkets({ cfg, db, readerDb = null, fetchImpl = global
     const url = await logoUrl(m); if (!url) return null;
     const c = logos.get(m); if (c && c.url === url && c.v !== undefined && now() - c.at < (c.v === null ? 30 * 60 * 1000 : 24 * 3600 * 1000)) return c.v;
     if (c && c.p) return c.p;
-    const p = fetchLogo(fetchImpl, url, { timeoutMs: cfg.timeoutMs, anyHost: !logoUrlAllowed(url) }).then(r => { const v = r.ok ? { bytes: r.bytes, type: r.type } : null; logos.set(m, { url, at: now(), v }); metrics?.inc('logo_fetch_' + (r.ok ? 'ok' : r.outcome)); return v; });
+    /* r181: pictures from token listings live on IPFS / Arweave gateways that redirect, are often large or SVG. Those are read through the
+     * wsrv.nl image service (follows redirects, returns a 128 px PNG); pinned hosts are still fetched directly. */
+    const via = logoUrlAllowed(url) ? url : 'https://wsrv.nl/?url=' + encodeURIComponent(url) + '&w=128&h=128&fit=cover&output=png';
+    const p = fetchLogo(fetchImpl, via, { timeoutMs: cfg.timeoutMs, anyHost: !logoUrlAllowed(url) }).then(r => { const v = r.ok ? { bytes: r.bytes, type: r.type } : null; logos.set(m, { url, at: now(), v }); metrics?.inc('logo_fetch_' + (r.ok ? 'ok' : r.outcome)); return v; });
     logos.set(m, { url, at: 0, p }); return p;
   }
 
